@@ -1,5 +1,5 @@
 [Unit]
-Description=Tactical Squad Duel - authoritative Godot game server
+Description=Campus Arcana - authoritative Godot game server
 After=network.target
 
 [Service]

@@ -5,6 +5,7 @@ extends Node
 const Cfg = preload("res://scripts/config.gd")
 const MapData = preload("res://scripts/map_data.gd")
 const MapView = preload("res://scripts/client/map_view.gd")
+const DoorView = preload("res://scripts/client/door_view.gd")
 const EntityView = preload("res://scripts/client/entity_view.gd")
 const VisionMask = preload("res://scripts/client/vision_mask.gd")
 const Hud = preload("res://scripts/client/hud.gd")
@@ -18,8 +19,18 @@ const Sfx = preload("res://scripts/client/sfx.gd")
 # its resolution saves little ongoing work but noticeably softens the artwork.
 const MAP_CACHE_SCALE := 1.0
 const FOG_MASK_SCALE := 0.5
-const MAP_ANIMATION_FPS := 30.0
 const FOG_MASK_FPS := 30.0
+
+enum GraphicsQuality { LOW, MEDIUM, HIGH }
+const GRAPHICS_PRESETS := [
+	{"name": "Low", "map_scale": 0.65, "fog_scale": 0.28, "fog_fps": 15.0,
+		"effect_density": 0.42, "vision_pos_step": 6.0, "vision_angle_step": 0.06, "cone_step_deg": 12.0},
+	{"name": "Medium", "map_scale": 0.82, "fog_scale": 0.40, "fog_fps": 24.0,
+		"effect_density": 0.70, "vision_pos_step": 4.0, "vision_angle_step": 0.035, "cone_step_deg": 8.0},
+	{"name": "High", "map_scale": 1.0, "fog_scale": 0.50, "fog_fps": 30.0,
+		"effect_density": 1.0, "vision_pos_step": 2.0, "vision_angle_step": 0.02, "cone_step_deg": 6.0},
+]
+const SETTINGS_PATH := "user://settings.cfg"
 
 const FOG_SHADER := """
 shader_type canvas_item;
@@ -63,6 +74,19 @@ var scan_fx := []
 var blast_fx := []
 var messages := []
 var ability_flash := []
+var _particle_pool: Array[Dictionary] = []
+var _tracer_pool: Array[Dictionary] = []
+
+# Graphics settings default to the previous visual quality. Presets change
+# render resolution and work frequency without affecting authoritative play.
+var graphics_quality := GraphicsQuality.HIGH
+var map_cache_scale := MAP_CACHE_SCALE
+var fog_mask_scale := FOG_MASK_SCALE
+var fog_mask_fps := FOG_MASK_FPS
+var effect_density := 1.0
+var vision_pos_step := 2.0
+var vision_angle_step := 0.02
+var cone_step_deg := 6.0
 
 var world_rotation := 0.0
 var voice_pings := []  # world markers for voice orders: {pos, label, t, max}
@@ -79,6 +103,8 @@ var camera: Camera2D
 var map_vp: SubViewport
 var map_view: Node2D
 var map_sprite: Sprite2D
+var breakable_view: Node2D
+var door_view: Node2D
 var entity_view: Node2D
 var fog_vp: SubViewport
 var vision_mask: Node2D
@@ -109,16 +135,17 @@ var voice: Node
 var sfx: Node
 var _host_server_pid := 0
 var _host_server_port := 0
-var _map_refresh_elapsed := 0.0
 var _fog_refresh_elapsed := 0.0
-var _last_map_state := -1
 var _last_map_revision := -1
+var _last_door_state := -1
+var _last_vision_signature := -1
 
 # stupid var to make sound at start only play once
 var intro_sound_played: bool = false
 
 
 func _ready() -> void:
+	_load_graphics_settings()
 	cooldowns.resize(Cfg.ABILITY_COUNT)
 	cooldowns.fill(0.0)
 	ability_flash.resize(Cfg.ABILITY_COUNT)
@@ -216,7 +243,7 @@ func _build_world() -> void:
 	world.add_child(world_light)
 
 	map_vp = SubViewport.new()
-	map_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * MAP_CACHE_SCALE), ceil(Cfg.WORLD_SIZE.y * MAP_CACHE_SCALE))
+	map_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * map_cache_scale), ceil(Cfg.WORLD_SIZE.y * map_cache_scale))
 	map_vp.disable_3d = true
 	map_vp.transparent_bg = false
 	map_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
@@ -224,14 +251,24 @@ func _build_world() -> void:
 	map_view = MapView.new()
 	map_view.map = map
 	map_view.game = self
-	map_view.scale = Vector2(MAP_CACHE_SCALE, MAP_CACHE_SCALE)
+	map_view.scale = Vector2(map_cache_scale, map_cache_scale)
 	map_vp.add_child(map_view)
+	_last_map_revision = map.breakable_revision
 	map_sprite = Sprite2D.new()
 	map_sprite.centered = false
-	map_sprite.scale = Vector2.ONE / MAP_CACHE_SCALE
+	map_sprite.scale = Vector2.ONE / map_cache_scale
 	map_sprite.texture = map_vp.get_texture()
 	map_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	world.add_child(map_sprite)
+	breakable_view = MapView.new()
+	breakable_view.map = map
+	breakable_view.game = self
+	breakable_view.draw_mode = MapView.DrawMode.BREAKABLES
+	world.add_child(breakable_view)
+	door_view = DoorView.new()
+	door_view.map = map
+	door_view.game = self
+	world.add_child(door_view)
 	camera = Camera2D.new()
 	camera.name = "ArenaCamera"
 	camera.position = Cfg.WORLD_SIZE * 0.5
@@ -244,19 +281,19 @@ func _build_world() -> void:
 	add_child(camera)
 
 	fog_vp = SubViewport.new()
-	fog_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * FOG_MASK_SCALE), ceil(Cfg.WORLD_SIZE.y * FOG_MASK_SCALE))
+	fog_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * fog_mask_scale), ceil(Cfg.WORLD_SIZE.y * fog_mask_scale))
 	fog_vp.disable_3d = true
 	fog_vp.transparent_bg = false
 	fog_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
 	add_child(fog_vp)
 	vision_mask = VisionMask.new()
 	vision_mask.game = self
-	vision_mask.scale = Vector2(FOG_MASK_SCALE, FOG_MASK_SCALE)
+	vision_mask.scale = Vector2(fog_mask_scale, fog_mask_scale)
 	fog_vp.add_child(vision_mask)
 
 	fog_sprite = Sprite2D.new()
 	fog_sprite.centered = false
-	fog_sprite.scale = Vector2.ONE / FOG_MASK_SCALE
+	fog_sprite.scale = Vector2.ONE / fog_mask_scale
 	fog_sprite.texture = fog_vp.get_texture()
 	fog_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	var mat := ShaderMaterial.new()
@@ -353,7 +390,7 @@ func _build_menu() -> void:
 	margin.add_child(box)
 
 	var title := Label.new()
-	title.text = "《Witch's Marionette: The Bloodstained Stage》"
+	title.text = "Campus Arcana"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 38)
 	title.add_theme_color_override("font_color", Color(0.96, 0.99, 1.0))
@@ -789,8 +826,19 @@ func _build_pause_menu() -> void:
 	volume_slider.custom_minimum_size.y = 48
 	volume_slider.value_changed.connect(_set_master_volume)
 	pause_settings_panel.add_child(volume_slider)
+	var quality_label := Label.new()
+	quality_label.text = "GRAPHICS QUALITY"
+	quality_label.add_theme_font_size_override("font_size", 17)
+	pause_settings_panel.add_child(quality_label)
+	var quality_select := OptionButton.new()
+	quality_select.custom_minimum_size.y = 44
+	for preset in GRAPHICS_PRESETS:
+		quality_select.add_item(str(preset["name"]))
+	quality_select.select(graphics_quality)
+	quality_select.item_selected.connect(_on_graphics_quality_selected)
+	pause_settings_panel.add_child(quality_select)
 	var hint := Label.new()
-	hint.text = "Adjust game sound effects and alerts. Online play continues in the background."
+	hint.text = "Low reduces map resolution, visibility updates and particles. Changes apply immediately and are saved."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", Color(0.72, 0.82, 0.9))
 	pause_settings_panel.add_child(hint)
@@ -871,6 +919,50 @@ func _show_pause_main() -> void:
 
 func _set_master_volume(value: float) -> void:
 	AudioServer.set_bus_volume_db(AudioServer.get_bus_index("Master"), clampf(value, -30.0, 0.0))
+
+
+func _load_graphics_settings() -> void:
+	var settings := ConfigFile.new()
+	var default_quality := GraphicsQuality.MEDIUM if OS.has_feature("web") else GraphicsQuality.HIGH
+	if settings.load(SETTINGS_PATH) == OK:
+		graphics_quality = clampi(int(settings.get_value("graphics", "quality", default_quality)), GraphicsQuality.LOW, GraphicsQuality.HIGH)
+	else:
+		graphics_quality = default_quality
+	_set_quality_variables(graphics_quality)
+
+
+func _set_quality_variables(quality: int) -> void:
+	graphics_quality = clampi(quality, GraphicsQuality.LOW, GraphicsQuality.HIGH)
+	var preset: Dictionary = GRAPHICS_PRESETS[graphics_quality]
+	map_cache_scale = float(preset["map_scale"])
+	fog_mask_scale = float(preset["fog_scale"])
+	fog_mask_fps = float(preset["fog_fps"])
+	effect_density = float(preset["effect_density"])
+	vision_pos_step = float(preset["vision_pos_step"])
+	vision_angle_step = float(preset["vision_angle_step"])
+	cone_step_deg = float(preset["cone_step_deg"])
+
+
+func _on_graphics_quality_selected(quality: int) -> void:
+	_set_quality_variables(quality)
+	if map_vp != null:
+		map_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * map_cache_scale), ceil(Cfg.WORLD_SIZE.y * map_cache_scale))
+		map_view.scale = Vector2(map_cache_scale, map_cache_scale)
+		map_sprite.scale = Vector2.ONE / map_cache_scale
+		map_view.queue_redraw()
+		map_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	if fog_vp != null:
+		fog_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * fog_mask_scale), ceil(Cfg.WORLD_SIZE.y * fog_mask_scale))
+		vision_mask.scale = Vector2(fog_mask_scale, fog_mask_scale)
+		fog_sprite.scale = Vector2.ONE / fog_mask_scale
+		_last_vision_signature = -1
+		_fog_refresh_elapsed = 1.0
+	if entity_view != null and entity_view.has_method("clear_performance_caches"):
+		entity_view.clear_performance_caches()
+	var settings := ConfigFile.new()
+	settings.load(SETTINGS_PATH)
+	settings.set_value("graphics", "quality", graphics_quality)
+	settings.save(SETTINGS_PATH)
 
 
 func _leave_match() -> void:
@@ -1082,8 +1174,8 @@ func _reset_round_visuals() -> void:
 	enemies.clear()
 	ghosts.clear()
 	scanned.clear()
-	tracers.clear()
-	magic_particles.clear()
+	_recycle_effects(tracers, _tracer_pool)
+	_recycle_effects(magic_particles, _particle_pool)
 	hurts.clear()
 	card_hits.clear()
 	card_shots.clear()
@@ -1206,8 +1298,7 @@ func _handle_event(ev: Array) -> void:
 			var from: Vector2 = ev[3]
 			var endpoint: Vector2 = ev[4]
 			var spell_color := Color(0.22, 0.88, 1.0) if team == slot else Color(1.0, 0.18, 0.78)
-			tracers.append({"a": from, "b": endpoint, "t": 0.42, "max": 0.42,
-				"color": spell_color, "seed": randf() * TAU, "hit": ev[5] > 0, "scale": 3.2})
+			_spawn_tracer(from, endpoint, 0.42, spell_color, ev[5] > 0, 3.2)
 			_spawn_magic_burst(from, spell_color, (endpoint - from).normalized(), 18)
 			_spawn_magic_burst(endpoint, spell_color.lerp(Color.WHITE, 0.4), (endpoint - from).normalized(), 28 if ev[5] > 0 else 15)
 			if team == slot:
@@ -1221,8 +1312,7 @@ func _handle_event(ev: Array) -> void:
 				card_shots.append({"idx": ev[2], "t": 0.65})
 			var spell_color := Color(0.12, 0.92, 1.0) if team == slot else Color(1.0, 0.16, 0.72)
 			for end in ev[4]:
-				tracers.append({"a": from, "b": end, "t": 0.26, "max": 0.26,
-					"color": spell_color, "seed": randf() * TAU, "hit": ev[5] > 0})
+				_spawn_tracer(from, end, 0.26, spell_color, ev[5] > 0)
 				_spawn_magic_burst(end, spell_color.lerp(Color.WHITE, 0.35), (end - from).normalized(), 7 if ev[5] > 0 else 3)
 			_spawn_magic_burst(from, spell_color, Vector2.from_angle(own[ev[2]]["disp_facing"]) if team == slot and ev[2] < own.size() else Vector2.RIGHT, 8)
 			var snd: String = ["cast", "cast_fast", "cast_burst"][weapon]
@@ -1257,16 +1347,40 @@ func _msg(text: String, col: Color) -> void:
 
 func _spawn_magic_burst(at: Vector2, col: Color, direction: Vector2, amount: int) -> void:
 	var base_angle := direction.angle() if direction.length_squared() > 0.001 else 0.0
-	for _i in amount:
+	var adjusted_amount := maxi(1, roundi(amount * effect_density))
+	var particle_cap: int = int([70, 120, 190][graphics_quality])
+	var spawn_count: int = maxi(0, mini(adjusted_amount, particle_cap - magic_particles.size()))
+	for _i in spawn_count:
 		var angle := base_angle + randf_range(-0.95, 0.95)
-		magic_particles.append({
-			"pos": at + Vector2.from_angle(angle) * randf_range(0.0, 4.0),
-			"vel": Vector2.from_angle(angle) * randf_range(35.0, 115.0),
-			"t": randf_range(0.20, 0.42),
-			"max": 0.42,
-			"color": col,
-			"size": randf_range(1.5, 3.3),
-		})
+		var particle: Dictionary = _particle_pool.pop_back() if not _particle_pool.is_empty() else {}
+		particle["pos"] = at + Vector2.from_angle(angle) * randf_range(0.0, 4.0)
+		particle["vel"] = Vector2.from_angle(angle) * randf_range(35.0, 115.0)
+		particle["t"] = randf_range(0.20, 0.42)
+		particle["max"] = 0.42
+		particle["color"] = col
+		particle["size"] = randf_range(1.5, 3.3)
+		magic_particles.append(particle)
+
+
+func _spawn_tracer(from: Vector2, to: Vector2, lifetime: float, color: Color, hit: bool, scale := 1.0) -> void:
+	var tracer: Dictionary = _tracer_pool.pop_back() if not _tracer_pool.is_empty() else {}
+	tracer["a"] = from
+	tracer["b"] = to
+	tracer["t"] = lifetime
+	tracer["max"] = lifetime
+	tracer["color"] = color
+	tracer["seed"] = randf() * TAU
+	tracer["hit"] = hit
+	tracer["scale"] = scale
+	tracers.append(tracer)
+
+
+func _recycle_effects(active: Array, pool: Array[Dictionary]) -> void:
+	for effect in active:
+		if effect is Dictionary:
+			effect.clear()
+			pool.append(effect)
+	active.clear()
 
 
 func fog_list() -> Array:
@@ -1300,7 +1414,7 @@ func _process(dt: float) -> void:
 		var e: Dictionary = enemies[idx]
 		e["disp"] = e["disp"].lerp(e["pos"], k)
 		e["disp_facing"] = lerp_angle(e["disp_facing"], e["facing"], k)
-	_tick_list(tracers, dt)
+	_tick_pooled_effects(tracers, _tracer_pool, dt)
 	_tick_magic_particles(dt)
 	_tick_list(hurts, dt)
 	_tick_list(card_hits, dt)
@@ -1314,8 +1428,6 @@ func _process(dt: float) -> void:
 		mic_btn.text = "Mic ON [V]" if voice.enabled else "Mic OFF [V]"
 	for a in Cfg.ABILITY_COUNT:
 		ability_flash[a] = maxf(0.0, ability_flash[a] - dt * 2.0)
-	if vision_mask:
-		vision_mask.reveal_all = state == Cfg.State.DEPLOYMENT or state == Cfg.State.COUNTDOWN or state == Cfg.State.ENDED
 	if world_light:
 		if state == Cfg.State.DEPLOYMENT:
 			world_light.color = Color(1.0, 0.98, 0.90)
@@ -1347,26 +1459,50 @@ func _process(dt: float) -> void:
 
 
 func _update_cached_layers(dt: float) -> void:
-	# Door leaves animate during deployment. The rest of the map is static and
-	# remains a single cached texture during the match.
-	_map_refresh_elapsed += dt
-	var map_state_changed := state != _last_map_state
+	# The detailed arena remains cached. Destruction refreshes only the small
+	# retained breakables overlay; deployment doors use their own overlay too.
 	var map_revision_changed := map.breakable_revision != _last_map_revision
-	if map_view != null and map_vp != null and (map_state_changed or map_revision_changed or (state == Cfg.State.DEPLOYMENT and _map_refresh_elapsed >= 1.0 / MAP_ANIMATION_FPS)):
-		_map_refresh_elapsed = 0.0
-		_last_map_state = state
+	if map_revision_changed:
 		_last_map_revision = map.breakable_revision
-		map_view.queue_redraw()
-		map_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+		_last_vision_signature = -1
+		if breakable_view != null:
+			breakable_view.queue_redraw()
+	if door_view != null and (state == Cfg.State.DEPLOYMENT or state != _last_door_state):
+		_last_door_state = state
+		door_view.queue_redraw()
 
-	# Visibility is cosmetic; the server still owns enemy visibility. Updating
-	# this soft mask at 30 Hz avoids visible stepping while still avoiding a
-	# offscreen render and hundreds of raycasts on every display frame.
+	# Visibility is cosmetic; the server owns enemy visibility. Rebuild the mask
+	# only when a unit/fog/occluder changed, capped by the selected quality preset.
+	var reveal_all_now := state == Cfg.State.DEPLOYMENT or state == Cfg.State.COUNTDOWN or state == Cfg.State.ENDED
+	if vision_mask != null:
+		vision_mask.reveal_all = reveal_all_now
+	var vision_signature := _vision_signature(reveal_all_now)
 	_fog_refresh_elapsed += dt
-	if vision_mask != null and fog_vp != null and _fog_refresh_elapsed >= 1.0 / FOG_MASK_FPS:
-		_fog_refresh_elapsed = fmod(_fog_refresh_elapsed, 1.0 / FOG_MASK_FPS)
+	if vision_mask != null and fog_vp != null and vision_signature != _last_vision_signature \
+			and _fog_refresh_elapsed >= 1.0 / fog_mask_fps:
+		_fog_refresh_elapsed = fmod(_fog_refresh_elapsed, 1.0 / fog_mask_fps)
+		_last_vision_signature = vision_signature
 		vision_mask.queue_redraw()
 		fog_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+
+
+func _vision_signature(reveal_all_now: bool) -> int:
+	var signature := 1 if reveal_all_now else 0
+	signature = signature * 31 + map.breakable_revision
+	if reveal_all_now:
+		return signature
+	for unit in own:
+		if not bool(unit.get("alive", false)):
+			continue
+		var p: Vector2 = unit.get("disp", Vector2.ZERO)
+		signature = signature * 31 + roundi(p.x / vision_pos_step)
+		signature = signature * 31 + roundi(p.y / vision_pos_step)
+		signature = signature * 31 + roundi(float(unit.get("disp_facing", 0.0)) / vision_angle_step)
+	for fog in fogs:
+		signature = signature * 31 + roundi(float(fog[0].x) / vision_pos_step)
+		signature = signature * 31 + roundi(float(fog[0].y) / vision_pos_step)
+		signature = signature * 31 + roundi(float(fog[1]))
+	return signature
 
 func _countdown_light_level() -> float:
 	var elapsed := clampf(Cfg.COUNTDOWN - countdown, 0.0, Cfg.COUNTDOWN)
@@ -1395,6 +1531,18 @@ func _tick_magic_particles(dt: float) -> void:
 		p["vel"] *= exp(-5.0 * dt)
 		if p["t"] <= 0.0:
 			magic_particles.remove_at(i)
+			p.clear()
+			_particle_pool.append(p)
+
+
+func _tick_pooled_effects(active: Array, pool: Array[Dictionary], dt: float) -> void:
+	for i in range(active.size() - 1, -1, -1):
+		var effect: Dictionary = active[i]
+		effect["t"] -= dt
+		if effect["t"] <= 0.0:
+			active.remove_at(i)
+			effect.clear()
+			pool.append(effect)
 
 
 # --------------------------------------------------------------------------

@@ -80,7 +80,7 @@ func start(port: int, cert := "", key := "") -> void:
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	rng.randomize()
 	_reset_squads()
-	print("[server] Tactical Squad Duel server listening on port %d%s" % [port, " (TLS)" if cert != "" else ""])
+	print("[server] Campus Arcana server listening on port %d%s" % [port, " (TLS)" if cert != "" else ""])
 
 
 # --------------------------------------------------------------------------

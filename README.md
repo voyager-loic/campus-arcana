@@ -1,4 +1,4 @@
-# 🎯 Tactical Squad Duel
+# 🎯 Campus Arcana
 
 > **Competitive Top-Down 1 vs 1 Tactical Squad Shooter for Web**  
 > Built with **Godot 4.7** (GL Compatibility) · **Authoritative Dedicated Server** · **Voice-Controlled Abilities** · **Server-Side Fog of War**
@@ -27,7 +27,7 @@
 
 ## 🎮 Game Concept & Features
 
-*Tactical Squad Duel* is a 1 vs 1 competitive top-down magic duel. Each player commands four casters—**Alpha**, **Bravo**, **Charlie**, and **Delta**—but directly directs one character at a time. Arc Bolt, Volley, and Prism are their weapons.
+*Campus Arcana* is a 1 vs 1 competitive top-down magic duel. Each player commands four casters—**Alpha**, **Bravo**, **Charlie**, and **Delta**—but directly directs one character at a time. Arc Bolt, Volley, and Prism are their weapons.
 
 - **Authoritative Server Simulation**: All movements, collisions, line-of-sight calculations, weapon firing, damage, and cooldowns run on the dedicated server.
 - **True Anti-Cheat Fog of War**: The server uses DDA raycasts to check visibility. Hidden enemy positions are **never sent to the client** until an ally has direct line of sight. Wallhacks and client tampering cannot reveal enemies!

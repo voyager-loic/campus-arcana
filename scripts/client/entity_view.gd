@@ -7,6 +7,7 @@ var game  # ClientGame
 var font: Font
 var soldier_texture: Texture2D
 var soldier_textures: Array[Texture2D] = []
+var _cone_cache := {}
 
 
 func _ready() -> void:
@@ -29,6 +30,10 @@ func _process(_dt: float) -> void:
 
 func _team_color(team: int) -> Color:
 	return Cfg.TEAM_COLORS[team]
+
+
+func clear_performance_caches() -> void:
+	_cone_cache.clear()
 
 
 func _draw() -> void:
@@ -62,13 +67,13 @@ func _draw() -> void:
 			var a := 0.20 if is_sel else 0.09
 			var enraged: bool = o["flags"] & 2 != 0
 			var col: Color = Color(1.0, 0.48, 0.12) if enraged else _team_color(my_team)
-			_draw_cone(o["disp"], o["disp_facing"], Cfg.weapon_cone(weapon), _display_range(weapon, o["flags"]), Color(col, a), Color(col, a + 0.25), fogs)
+			_draw_cone("own_%d" % o["idx"], o["disp"], o["disp_facing"], Cfg.weapon_cone(weapon), _display_range(weapon, o["flags"]), Color(col, a), Color(col, a + 0.25), fogs)
 
 		# Visible enemy cones
 		for idx in game.enemies:
 			var e: Dictionary = game.enemies[idx]
 			var weapon: int = Cfg.SQUAD_WEAPONS[idx]
-			_draw_cone(e["disp"], e["disp_facing"], Cfg.weapon_cone(weapon), _display_range(weapon, e["flags"]), Color(_team_color(enemy_team), 0.08), Color(_team_color(enemy_team), 0.3), fogs)
+			_draw_cone("enemy_%d" % idx, e["disp"], e["disp_facing"], Cfg.weapon_cone(weapon), _display_range(weapon, e["flags"]), Color(_team_color(enemy_team), 0.08), Color(_team_color(enemy_team), 0.3), fogs)
 
 	# Selected soldier path / watch direction
 	if game.state == Cfg.State.PLAYING and game.selected >= 0 and game.selected < game.own.size():
@@ -272,18 +277,37 @@ func _display_range(weapon: int, flags: int) -> float:
 	return result
 
 
-func _draw_cone(origin: Vector2, facing: float, cone: float, radius: float, fill: Color, line: Color, fogs: Array) -> void:
-	var steps := maxi(3, int(ceil(cone / deg_to_rad(6.0))))
-	var pts := PackedVector2Array([origin])
-	for i in steps + 1:
-		var a := facing - cone * 0.5 + cone * float(i) / steps
-		var d := Vector2.from_angle(a)
-		pts.append(origin + d * game.map.sight_distance(origin, d, radius, fogs))
+func _draw_cone(cache_key: String, origin: Vector2, facing: float, cone: float, radius: float, fill: Color, line: Color, fogs: Array) -> void:
+	var signature: int = int(game.map.breakable_revision)
+	signature = signature * 31 + roundi(origin.x / game.vision_pos_step)
+	signature = signature * 31 + roundi(origin.y / game.vision_pos_step)
+	signature = signature * 31 + roundi(facing / game.vision_angle_step)
+	signature = signature * 31 + roundi(radius)
+	for fog in fogs:
+		signature = signature * 31 + roundi(float(fog[0].x) / game.vision_pos_step)
+		signature = signature * 31 + roundi(float(fog[0].y) / game.vision_pos_step)
+		signature = signature * 31 + roundi(float(fog[1]))
+	var cached: Dictionary = _cone_cache.get(cache_key, {})
+	var pts: PackedVector2Array
+	if int(cached.get("signature", -2147483648)) == signature:
+		pts = cached["points"]
+	else:
+		var ray_steps := maxi(3, int(ceil(cone / deg_to_rad(game.cone_step_deg))))
+		pts = PackedVector2Array([origin])
+		for i in ray_steps + 1:
+			var a := facing - cone * 0.5 + cone * float(i) / ray_steps
+			var d := Vector2.from_angle(a)
+			pts.append(origin + d * game.map.sight_distance(origin, d, radius, fogs))
+		_cone_cache[cache_key] = {"signature": signature, "points": pts, "origin": origin}
+	var cached_origin: Vector2 = _cone_cache[cache_key].get("origin", origin)
+	draw_set_transform(origin - cached_origin)
+	var triangle_steps := pts.size() - 2
 	var cols := PackedColorArray([fill, fill, fill])
-	for i in steps:
+	for i in triangle_steps:
 		draw_primitive(PackedVector2Array([pts[0], pts[i + 1], pts[i + 2]]), cols, PackedVector2Array())
-	draw_line(origin, pts[1], line, 1.0)
-	draw_line(origin, pts[pts.size() - 1], line, 1.0)
+	draw_line(cached_origin, pts[1], line, 1.0)
+	draw_line(cached_origin, pts[pts.size() - 1], line, 1.0)
+	draw_set_transform_matrix(Transform2D.IDENTITY)
 
 
 func _draw_dashed(a: Vector2, b: Vector2, col: Color) -> void:

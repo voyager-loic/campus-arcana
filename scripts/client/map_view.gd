@@ -4,9 +4,12 @@ extends Node2D
 
 const Cfg = preload("res://scripts/config.gd")
 
+enum DrawMode { STATIC_MAP, BREAKABLES }
+
 var map
 var game
 var font: Font
+var draw_mode := DrawMode.STATIC_MAP
 
 
 func _ready() -> void:
@@ -14,15 +17,11 @@ func _ready() -> void:
 	queue_redraw()
 
 
-func door_open_amount() -> float:
-	if game == null or game.state != Cfg.State.DEPLOYMENT:
-		return 0.0
-	var elapsed: float = Cfg.DEPLOYMENT_DURATION - game.deployment
-	return minf(smoothstep(0.0, 0.55, elapsed), smoothstep(0.0, 0.75, game.deployment))
-
-
 func _draw() -> void:
 	if map == null:
+		return
+	if draw_mode == DrawMode.BREAKABLES:
+		_draw_breakable_layer()
 		return
 	var t := float(Cfg.TILE)
 
@@ -44,6 +43,8 @@ func _draw() -> void:
 
 	# Chairs and tabletops are both derived from the same 4/8-seat table record.
 	for table in map.tables:
+		if bool(table.get("breakable", false)):
+			continue
 		var table_rect: Rect2 = map.table_visual_rect(table)
 		var anchor: Vector2i = table["anchor"]
 		draw_set_transform(table_rect.get_center(), float(table.get("angle", 0.0)), Vector2.ONE)
@@ -75,6 +76,8 @@ func _draw() -> void:
 				map.SolidKind.GLASS:
 					pass # rendered as one continuous framed wall below
 	for table in map.tables:
+		if bool(table.get("breakable", false)):
+			continue
 		var anchor: Vector2i = table["anchor"]
 		var table_rect: Rect2 = map.table_visual_rect(table)
 		draw_set_transform(table_rect.get_center(), float(table.get("angle", 0.0)), Vector2.ONE)
@@ -84,13 +87,28 @@ func _draw() -> void:
 		_draw_counter(map.counter_visual_rect(map.counter_rects[idx]), idx)
 	for fixture in map.service_fixtures:
 		_draw_service_fixture(fixture)
-	for fixture in map.breakable_fixtures:
-		_draw_breakable_fixture(fixture)
 	_draw_main_room_clutter()
 	_draw_lower_room_clutter()
 
 	_draw_door_frames()
-	_draw_doors(door_open_amount())
+
+
+func _draw_breakable_layer() -> void:
+	# This small retained drawing layer is refreshed only after destruction.
+	# The full arena texture never needs to be regenerated for a broken prop.
+	for table in map.tables:
+		if not bool(table.get("breakable", false)):
+			continue
+		var anchor: Vector2i = table["anchor"]
+		var table_rect: Rect2 = map.table_visual_rect(table)
+		draw_set_transform(table_rect.get_center(), float(table.get("angle", 0.0)), Vector2.ONE)
+		if not bool(table.get("tipped", false)) and not bool(table.get("destroyed", false)):
+			_draw_table_chairs(Rect2(-table_rect.size * 0.5, table_rect.size), table["seats"], anchor.x + anchor.y * 83)
+		_draw_table(Rect2(-table_rect.size * 0.5, table_rect.size), anchor.x, anchor.y,
+			bool(table.get("damaged", false)), bool(table.get("tipped", false)), bool(table.get("destroyed", false)))
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	for fixture in map.breakable_fixtures:
+		_draw_breakable_fixture(fixture)
 
 
 func _draw_team_entry_glow() -> void:
@@ -475,25 +493,3 @@ func _draw_door_frames() -> void:
 	var t := float(Cfg.TILE)
 	draw_rect(Rect2(2 * t - 3, map.MAIN_BOTTOM * t - 7, 6 * t + 6, 10), Color("555d69"))
 	draw_rect(Rect2((Cfg.MAP_W - 1) * t - 7, 2 * t - 3, 10, 6 * t + 6), Color("555d69"))
-
-
-func _draw_doors(open_amount: float) -> void:
-	var t := float(Cfg.TILE)
-	var panel := 3.0 * t
-	var slide := panel * open_amount
-	var blue_y: float = map.MAIN_BOTTOM * t
-	_draw_door_panel(Rect2(2 * t - slide, blue_y, panel, 8), Cfg.TEAM_COLORS[0], true)
-	_draw_door_panel(Rect2(5 * t + slide, blue_y, panel, 8), Cfg.TEAM_COLORS[0], true)
-	var red_x := (Cfg.MAP_W - 1) * t
-	_draw_door_panel(Rect2(red_x, 2 * t - slide, 8, panel), Cfg.TEAM_COLORS[1], false)
-	_draw_door_panel(Rect2(red_x, 5 * t + slide, 8, panel), Cfg.TEAM_COLORS[1], false)
-
-
-func _draw_door_panel(r: Rect2, team_color: Color, horizontal: bool) -> void:
-	draw_rect(r, Color("202936"))
-	draw_rect(r.grow(-2), Color("394758"))
-	draw_rect(r.grow(-2), Color(team_color, 0.65), false, 1.5)
-	if horizontal:
-		draw_line(r.position + Vector2(5, r.size.y * 0.5), r.end - Vector2(5, r.size.y * 0.5), Color(0.78, 0.84, 0.9, 0.5), 1.0)
-	else:
-		draw_line(r.position + Vector2(r.size.x * 0.5, 5), r.end - Vector2(r.size.x * 0.5, 5), Color(0.78, 0.84, 0.9, 0.5), 1.0)

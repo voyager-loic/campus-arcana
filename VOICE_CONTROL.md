@@ -1,6 +1,6 @@
 # 🎙️ Voice Control & Tactical Command Guide
 
-> **Tactical Squad Duel** can be played completely hands-free: select soldiers, steer them across the map, aim firing cones, and trigger tactical spells, all by speaking.
+> **Campus Arcana** can be played completely hands-free: select soldiers, steer them across the map, aim firing cones, and trigger tactical spells, all by speaking.
 >
 > Mouse and keyboard keep working at all times.
 

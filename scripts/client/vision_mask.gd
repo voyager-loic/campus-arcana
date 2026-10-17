@@ -7,9 +7,6 @@ extends Node2D
 
 const Cfg = preload("res://scripts/config.gd")
 
-const CONE_STEP := deg_to_rad(1.5)
-const CIRCLE_SEGMENTS := 36
-
 var game  # ClientGame
 var reveal_all := false
 
@@ -24,6 +21,8 @@ func _draw() -> void:
 	var fogs: Array = game.fog_list()
 	var points := PackedVector2Array()
 	var indices := PackedInt32Array()
+	var cone_step := deg_to_rad(maxf(1.5, game.cone_step_deg * 0.25))
+	var circle_segments := maxi(16, roundi(36.0 * sqrt(game.effect_density)))
 	for o in game.own:
 		if not o["alive"]:
 			continue
@@ -31,10 +30,10 @@ func _draw() -> void:
 		var facing: float = o["disp_facing"]
 		# Cone
 		var half := Cfg.VIEW_CONE * 0.5
-		var steps := int(ceil(Cfg.VIEW_CONE / CONE_STEP))
+		var steps := int(ceil(Cfg.VIEW_CONE / cone_step))
 		_add_fan(points, indices, origin, facing - half, Cfg.VIEW_CONE, steps, Cfg.VIEW_RANGE, fogs)
 		# Close-range awareness circle
-		_add_fan(points, indices, origin, 0.0, TAU, CIRCLE_SEGMENTS, Cfg.AWARE_RADIUS, fogs)
+		_add_fan(points, indices, origin, 0.0, TAU, circle_segments, Cfg.AWARE_RADIUS, fogs)
 	if points.is_empty():
 		return
 	var colors := PackedColorArray()
