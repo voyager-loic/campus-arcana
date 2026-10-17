@@ -17,8 +17,10 @@ const ROOM_LEFT := 27
 const ROOM_RIGHT := 78
 const ROOM_BREACH_LEFT := 72
 const ROOM_BREACH_RIGHT := 76
+const BREAKABLE_TABLE_HP := 40
+const BREAKABLE_GLASS_HP := 40
 
-enum SolidKind { NONE, WALL, TABLE, PLANT, COUNTER, VOID, RUBBLE }
+enum SolidKind { NONE, WALL, TABLE, PLANT, COUNTER, VOID, RUBBLE, GLASS }
 enum Zone { HALL, STAIR }
 
 var grid := PackedByteArray()
@@ -26,8 +28,10 @@ var astar := AStarGrid2D.new()
 var tables: Array[Dictionary] = []
 var counter_rects: Array[Rect2i] = []
 var service_fixtures: Array[Dictionary] = []
+var breakable_fixtures: Array[Dictionary] = []
 var layout_overlaps: Array[Vector2i] = []
 var doors_closed := false
+var breakable_revision := 0
 
 
 func _init() -> void:
@@ -66,11 +70,37 @@ func _solid_line(from: Vector2i, to: Vector2i, kind := SolidKind.WALL) -> void:
 
 func _add_table(anchor: Vector2i, seats: int, angle := 0.0, tipped := false, damaged := false) -> void:
 	assert(seats == 4 or seats == 8)
-	tables.append({"anchor": anchor, "seats": seats, "angle": angle, "tipped": tipped, "damaged": damaged})
-	var height := 2 if seats == 4 else 3
-	for y in range(anchor.y, anchor.y + height):
-		for x in range(anchor.x, anchor.x + 2):
-			_set_solid(x, y, SolidKind.TABLE)
+	var table := {"anchor": anchor, "seats": seats, "angle": angle, "tipped": tipped, "damaged": damaged}
+	tables.append(table)
+	for cell in table_collision_cells(table):
+		_set_solid(cell.x, cell.y, SolidKind.TABLE)
+
+
+## Tile approximation of the visible furniture. Upright tables keep their
+## rectangular footprint; tipped tables use a narrow sampled line matching the
+## rotated slab instead of retaining the much larger upright hitbox.
+func table_collision_cells(table: Dictionary) -> Array[Vector2i]:
+	var cells: Array[Vector2i] = []
+	if bool(table.get("destroyed", false)):
+		return cells
+	var anchor: Vector2i = table["anchor"]
+	if not bool(table.get("tipped", false)):
+		var height := 2 if int(table["seats"]) == 4 else 3
+		for y in range(anchor.y, anchor.y + height):
+			for x in range(anchor.x, anchor.x + 2):
+				cells.append(Vector2i(x, y))
+		return cells
+	var visual := table_visual_rect(table)
+	var angle := float(table.get("angle", 0.0))
+	var along := Vector2(-sin(angle), cos(angle))
+	var half_length := visual.size.y * 0.5 - 5.0
+	var samples := maxi(3, ceili(visual.size.y / (float(T) * 0.38)))
+	for i in range(samples + 1):
+		var p := visual.get_center() + along * lerpf(-half_length, half_length, float(i) / float(samples))
+		var cell := Vector2i(floori(p.x / T), floori(p.y / T))
+		if not cells.has(cell):
+			cells.append(cell)
+	return cells
 
 
 func _table_group(y: int, start_x: int, count: int, seats: int) -> void:
@@ -85,21 +115,174 @@ func _table_group(y: int, start_x: int, count: int, seats: int) -> void:
 func _disturb_table(anchor: Vector2i, angle: float, damaged := false, tipped := false) -> void:
 	for table in tables:
 		if table["anchor"] == anchor:
+			for cell in table_collision_cells(table):
+				grid[cell.y * W + cell.x] = SolidKind.NONE
 			table["angle"] = angle
 			table["damaged"] = damaged
 			table["tipped"] = tipped
+			for cell in table_collision_cells(table):
+				_set_solid(cell.x, cell.y, SolidKind.TABLE)
 			return
 
 
 func _destroy_table(anchor: Vector2i) -> void:
 	for table in tables:
 		if table["anchor"] == anchor:
+			var cells := table_collision_cells(table)
 			table["destroyed"] = true
-			var height := 2 if table["seats"] == 4 else 3
-			for y in range(anchor.y, anchor.y + height):
-				for x in range(anchor.x, anchor.x + 2):
-					_set_solid(x, y, SolidKind.NONE)
+			for cell in cells:
+				_set_solid(cell.x, cell.y, SolidKind.NONE)
 			return
+
+
+func _mark_table_breakable(anchor: Vector2i) -> void:
+	for table in tables:
+		if table["anchor"] == anchor:
+			var id := breakable_count()
+			table["breakable"] = true
+			table["breakable_id"] = id
+			table["hp"] = BREAKABLE_TABLE_HP
+			table["damaged"] = true
+			table["destroyed"] = false
+			return
+	push_error("Breakable table anchor not found: %s" % anchor)
+
+
+func breakable_count() -> int:
+	var count := 0
+	for table in tables:
+		if bool(table.get("breakable", false)):
+			count += 1
+	return count + breakable_fixtures.size()
+
+
+func breakable_state() -> Array:
+	var state := []
+	state.resize(breakable_count())
+	state.fill(false)
+	for table in tables:
+		if bool(table.get("breakable", false)):
+			state[int(table["breakable_id"])] = bool(table.get("destroyed", false))
+	for fixture in breakable_fixtures:
+		state[int(fixture["breakable_id"])] = bool(fixture.get("destroyed", false))
+	return state
+
+
+func _set_breakable_destroyed(table: Dictionary, destroyed: bool) -> bool:
+	if bool(table.get("destroyed", false)) == destroyed:
+		return false
+	var old_cells := table_collision_cells(table)
+	table["destroyed"] = destroyed
+	table["hp"] = 0 if destroyed else BREAKABLE_TABLE_HP
+	var new_cells := table_collision_cells(table)
+	for cell in old_cells:
+		grid[cell.y * W + cell.x] = SolidKind.NONE
+		astar.set_point_solid(cell, false)
+	for cell in new_cells:
+		grid[cell.y * W + cell.x] = SolidKind.TABLE
+		astar.set_point_solid(cell, true)
+	breakable_revision += 1
+	return true
+
+
+func _set_breakable_fixture_destroyed(fixture: Dictionary, destroyed: bool) -> bool:
+	if bool(fixture.get("destroyed", false)) == destroyed:
+		return false
+	fixture["destroyed"] = destroyed
+	fixture["hp"] = 0 if destroyed else BREAKABLE_GLASS_HP
+	var rect: Rect2i = fixture["rect"]
+	for y in range(rect.position.y, rect.end.y):
+		for x in range(rect.position.x, rect.end.x):
+			grid[y * W + x] = SolidKind.NONE if destroyed else SolidKind.GLASS
+			astar.set_point_solid(Vector2i(x, y), destroyed == false)
+	breakable_revision += 1
+	return true
+
+
+func apply_breakable_state(state) -> bool:
+	var changed := false
+	for table in tables:
+		if not bool(table.get("breakable", false)):
+			continue
+		var id := int(table["breakable_id"])
+		if id < state.size():
+			changed = _set_breakable_destroyed(table, bool(state[id])) or changed
+	for fixture in breakable_fixtures:
+		var id := int(fixture["breakable_id"])
+		if id < state.size():
+			changed = _set_breakable_fixture_destroyed(fixture, bool(state[id])) or changed
+	return changed
+
+
+func reset_breakables() -> void:
+	for table in tables:
+		if bool(table.get("breakable", false)):
+			_set_breakable_destroyed(table, false)
+	for fixture in breakable_fixtures:
+		_set_breakable_fixture_destroyed(fixture, false)
+
+
+## Damage breakable cover touched by a circular blast. Returns [id, centre]
+## records for props that collapsed during this call.
+func damage_breakables(center: Vector2, radius: float, damage: int) -> Array:
+	var destroyed := []
+	if damage <= 0:
+		return destroyed
+	for table in tables:
+		if not bool(table.get("breakable", false)) or bool(table.get("destroyed", false)):
+			continue
+		var touched := false
+		for cell in table_collision_cells(table):
+			var rect := Rect2(Vector2(cell) * float(T), Vector2(T, T))
+			var nearest := Vector2(clampf(center.x, rect.position.x, rect.end.x), clampf(center.y, rect.position.y, rect.end.y))
+			if center.distance_to(nearest) <= radius:
+				touched = true
+				break
+		if not touched:
+			continue
+		table["hp"] = int(table.get("hp", BREAKABLE_TABLE_HP)) - damage
+		if int(table["hp"]) <= 0 and _set_breakable_destroyed(table, true):
+			destroyed.append([int(table["breakable_id"]), table_visual_rect(table).get_center(), "table"])
+	for fixture in breakable_fixtures:
+		if bool(fixture.get("destroyed", false)):
+			continue
+		var cells: Rect2i = fixture["rect"]
+		var rect := Rect2(Vector2(cells.position) * float(T), Vector2(cells.size) * float(T))
+		var nearest := Vector2(clampf(center.x, rect.position.x, rect.end.x), clampf(center.y, rect.position.y, rect.end.y))
+		if center.distance_to(nearest) > radius:
+			continue
+		fixture["hp"] = int(fixture.get("hp", BREAKABLE_GLASS_HP)) - damage
+		if int(fixture["hp"]) <= 0 and _set_breakable_fixture_destroyed(fixture, true):
+			destroyed.append([int(fixture["breakable_id"]), rect.get_center(), str(fixture["kind"])])
+	return destroyed
+
+
+func damage_breakable_at(point: Vector2, damage: int) -> Array:
+	for table in tables:
+		if not bool(table.get("breakable", false)) or bool(table.get("destroyed", false)):
+			continue
+		for cell in table_collision_cells(table):
+			if Rect2(Vector2(cell) * float(T), Vector2(T, T)).has_point(point):
+				return damage_breakables(point, 1.0, damage)
+	for fixture in breakable_fixtures:
+		if bool(fixture.get("destroyed", false)):
+			continue
+		var cells: Rect2i = fixture["rect"]
+		var rect := Rect2(Vector2(cells.position) * float(T), Vector2(cells.size) * float(T))
+		if rect.has_point(point):
+			return damage_breakables(point, 1.0, damage)
+	return []
+
+
+func _add_breakable_glass(rect: Rect2i) -> void:
+	var fixture := {
+		"kind": "glass_wall", "rect": rect, "breakable_id": breakable_count(),
+		"hp": BREAKABLE_GLASS_HP, "destroyed": false,
+	}
+	breakable_fixtures.append(fixture)
+	for y in range(rect.position.y, rect.end.y):
+		for x in range(rect.position.x, rect.end.x):
+			_set_solid(x, y, SolidKind.GLASS)
 
 
 func _add_counter(rect: Rect2i) -> void:
@@ -205,6 +388,12 @@ func _build_layout() -> void:
 	_disturb_table(Vector2i(16, 39), -0.09)
 	_disturb_table(Vector2i(62, 39), 0.62, true, true)
 	_destroy_table(Vector2i(74, 39))
+	# Cracked tables act as destructible cover. A fireball or the heavy return
+	# projectile collapses them into walkable debris and opens a new route.
+	for anchor in [Vector2i(12, 1), Vector2i(24, 1), Vector2i(13, 14), Vector2i(53, 14),
+			Vector2i(25, 20), Vector2i(22, 27), Vector2i(62, 31), Vector2i(62, 39),
+			Vector2i(65, 10), Vector2i(46, 10)]:
+		_mark_table_breakable(anchor)
 
 	# Plants and service furniture shown in the plan.
 	for p in [Vector2i(2, 2), Vector2i(33, 11), Vector2i(32, 27), Vector2i(42, 19)]:
@@ -214,6 +403,10 @@ func _build_layout() -> void:
 	_add_counter(Rect2i(42, 31, 4, 1)) # right slim service table
 	_add_counter(Rect2i(46, 31, 3, 2)) # right square service station
 	_add_counter(Rect2i(43, 41, 5, 2)) # right fountain shifted clear of lower passage
+	# A broad glass security wall seals the main entrance to the lower cafeteria.
+	# It is solid cover until shattered, while the smaller blast breach remains an
+	# alternate route into the room.
+	_add_breakable_glass(Rect2i(32, MAIN_BOTTOM, 11, 1))
 
 	# Lower cafeteria room. The fixtures follow the annotated plan while leaving
 	# broad circulation routes around every service area.

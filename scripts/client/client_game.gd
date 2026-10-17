@@ -11,6 +11,16 @@ const Hud = preload("res://scripts/client/hud.gd")
 const Voice = preload("res://scripts/client/voice.gd")
 const Sfx = preload("res://scripts/client/sfx.gd")
 
+# The arena is much larger than the viewport. Rendering its thousands of
+# vector primitives directly every frame is expensive on integrated GPUs and
+# in WebGL, so static scenery is cached and visibility uses an offscreen layer.
+# Keep the scenery cache full-resolution: it is rendered rarely, so lowering
+# its resolution saves little ongoing work but noticeably softens the artwork.
+const MAP_CACHE_SCALE := 1.0
+const FOG_MASK_SCALE := 0.5
+const MAP_ANIMATION_FPS := 30.0
+const FOG_MASK_FPS := 30.0
+
 const FOG_SHADER := """
 shader_type canvas_item;
 uniform float darkness = 0.74;
@@ -66,7 +76,9 @@ var _debug_loadout_sent := false
 # --- Nodes -----------------------------------------------------------------
 var world: Node2D
 var camera: Camera2D
+var map_vp: SubViewport
 var map_view: Node2D
+var map_sprite: Sprite2D
 var entity_view: Node2D
 var fog_vp: SubViewport
 var vision_mask: Node2D
@@ -78,6 +90,7 @@ var menu_layer: CanvasLayer
 var name_edit: LineEdit
 var url_edit: LineEdit
 var connect_btn: Button
+var host_btn: Button
 var status_label: Label
 var mic_btn: Button
 var menu_panorama: TextureRect
@@ -94,6 +107,12 @@ var pause_main_panel: VBoxContainer
 var pause_settings_panel: VBoxContainer
 var voice: Node
 var sfx: Node
+var _host_server_pid := 0
+var _host_server_port := 0
+var _map_refresh_elapsed := 0.0
+var _fog_refresh_elapsed := 0.0
+var _last_map_state := -1
+var _last_map_revision := -1
 
 # stupid var to make sound at start only play once
 var intro_sound_played: bool = false
@@ -123,13 +142,20 @@ func _ready() -> void:
 	Net.connection_ok.connect(_on_connection_ok)
 	Net.connection_lost.connect(_on_connection_lost)
 	_show_menu(true, "")
-	if _query_param("auto") != "":
+	if _query_param("host") != "":
+		_on_host_pressed()
+	elif _query_param("auto") != "":
 		_on_connect_pressed()
 	_setup_debug_hooks()
 
 
+func _exit_tree() -> void:
+	_stop_host_server()
+
+
 ## Native-only testing helpers:
 ##   --screenshot=/path.png [--shot_delay=8]  save a frame and quit
+##   --quit_after=3                            quit cleanly after N seconds
 ##   --demo                                     squad auto-advances toward the centre
 ##   --say="alpha go to kitchen;fireball mid"   feed voice commands once the match runs
 func _setup_debug_hooks() -> void:
@@ -172,6 +198,9 @@ func _setup_debug_hooks() -> void:
 				_use_ability(Cfg.Ability.OUTRAGE, false))
 	if _query_param("pause") != "":
 		get_tree().create_timer(4.0).timeout.connect(_open_pause)
+	var quit_after := float(_query_param("quit_after"))
+	if quit_after > 0.0:
+		get_tree().create_timer(quit_after).timeout.connect(get_tree().quit)
 
 
 # --------------------------------------------------------------------------
@@ -185,10 +214,24 @@ func _build_world() -> void:
 	world_light = CanvasModulate.new()
 	world_light.color = Color.WHITE
 	world.add_child(world_light)
+
+	map_vp = SubViewport.new()
+	map_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * MAP_CACHE_SCALE), ceil(Cfg.WORLD_SIZE.y * MAP_CACHE_SCALE))
+	map_vp.disable_3d = true
+	map_vp.transparent_bg = false
+	map_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	add_child(map_vp)
 	map_view = MapView.new()
 	map_view.map = map
 	map_view.game = self
-	world.add_child(map_view)
+	map_view.scale = Vector2(MAP_CACHE_SCALE, MAP_CACHE_SCALE)
+	map_vp.add_child(map_view)
+	map_sprite = Sprite2D.new()
+	map_sprite.centered = false
+	map_sprite.scale = Vector2.ONE / MAP_CACHE_SCALE
+	map_sprite.texture = map_vp.get_texture()
+	map_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	world.add_child(map_sprite)
 	camera = Camera2D.new()
 	camera.name = "ArenaCamera"
 	camera.position = Cfg.WORLD_SIZE * 0.5
@@ -201,19 +244,19 @@ func _build_world() -> void:
 	add_child(camera)
 
 	fog_vp = SubViewport.new()
-	fog_vp.size = Vector2i(Cfg.WORLD_SIZE * 0.5)
+	fog_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * FOG_MASK_SCALE), ceil(Cfg.WORLD_SIZE.y * FOG_MASK_SCALE))
 	fog_vp.disable_3d = true
 	fog_vp.transparent_bg = false
-	fog_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	fog_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
 	add_child(fog_vp)
 	vision_mask = VisionMask.new()
 	vision_mask.game = self
-	vision_mask.scale = Vector2(0.5, 0.5)
+	vision_mask.scale = Vector2(FOG_MASK_SCALE, FOG_MASK_SCALE)
 	fog_vp.add_child(vision_mask)
 
 	fog_sprite = Sprite2D.new()
 	fog_sprite.centered = false
-	fog_sprite.scale = Vector2(2, 2)
+	fog_sprite.scale = Vector2.ONE / FOG_MASK_SCALE
 	fog_sprite.texture = fog_vp.get_texture()
 	fog_sprite.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	var mat := ShaderMaterial.new()
@@ -268,9 +311,6 @@ func _toggle_voice() -> void:
 
 
 func _build_menu() -> void:
-	sfx.play("menu_music")
-
-
 	menu_layer = CanvasLayer.new()
 	menu_layer.layer = 10
 	add_child(menu_layer)
@@ -346,12 +386,27 @@ func _build_menu() -> void:
 	url_edit.text = _default_url()
 	_style_menu_field(url_edit)
 	box.add_child(url_edit)
+	var connection_actions := HBoxContainer.new()
+	connection_actions.add_theme_constant_override("separation", 10)
+	box.add_child(connection_actions)
 	connect_btn = Button.new()
 	connect_btn.text = "Deploy"
 	connect_btn.custom_minimum_size = Vector2(0, 40)
+	connect_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_style_menu_button(connect_btn)
 	connect_btn.pressed.connect(_on_connect_pressed)
-	box.add_child(connect_btn)
+	connection_actions.add_child(connect_btn)
+	host_btn = Button.new()
+	host_btn.text = "Host Game"
+	host_btn.custom_minimum_size = Vector2(0, 40)
+	host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host_btn.tooltip_text = "Start an authoritative game server on this computer"
+	_style_menu_button(host_btn)
+	host_btn.pressed.connect(_on_host_pressed)
+	connection_actions.add_child(host_btn)
+	if OS.has_feature("web"):
+		host_btn.disabled = true
+		host_btn.tooltip_text = "Browser builds can join games but cannot launch a local server"
 	status_label = Label.new()
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	status_label.add_theme_color_override("font_color", Color(1.0, 0.83, 0.28))
@@ -823,6 +878,7 @@ func _leave_match() -> void:
 	_connected = false
 	slot = -1
 	Net.leave()
+	_stop_host_server()
 	_show_menu(true, "Left online match.")
 
 
@@ -881,6 +937,7 @@ func _show_menu(show: bool, status: String) -> void:
 	hud_layer.visible = not show
 	status_label.text = status
 	connect_btn.disabled = false
+	host_btn.disabled = OS.has_feature("web")
 
 
 # --------------------------------------------------------------------------
@@ -914,16 +971,70 @@ func _default_url() -> String:
 
 
 func _on_connect_pressed() -> void:
+	_stop_host_server()
 	voice.start()
 	var url := url_edit.text.strip_edges()
+	_connect_to_url(url)
+
+
+func _connect_to_url(url: String) -> void:
 	if not (url.begins_with("ws://") or url.begins_with("wss://")):
 		status_label.text = "Server address must start with ws:// or wss://"
 		return
 	connect_btn.disabled = true
+	host_btn.disabled = true
 	status_label.text = "Connecting to %s ..." % url
 	var err := Net.join(url)
 	if err != OK:
 		_show_menu(true, "Could not start connection (error %d)" % err)
+
+
+func _on_host_pressed() -> void:
+	if OS.has_feature("web"):
+		status_label.text = "Hosting is available in the desktop build. Browser players can join a host."
+		return
+	_stop_host_server()
+	var requested_port := int(_query_param("host_port"))
+	_host_server_port = requested_port if requested_port > 0 and requested_port <= 65535 else Cfg.DEFAULT_PORT
+	var port_probe := TCPServer.new()
+	var port_error := port_probe.listen(_host_server_port)
+	port_probe.stop()
+	if port_error != OK:
+		_show_menu(true, "Port %d is already in use. Stop the other server or join it with Deploy." % _host_server_port)
+		return
+	voice.start()
+	connect_btn.disabled = true
+	host_btn.disabled = true
+	status_label.text = "Starting a game server on port %d ..." % _host_server_port
+	var args := PackedStringArray()
+	args.append("--headless")
+	if OS.has_feature("editor"):
+		args.append("--path")
+		args.append(ProjectSettings.globalize_path("res://"))
+	args.append("--")
+	args.append("--server")
+	args.append("--port=%d" % _host_server_port)
+	_host_server_pid = OS.create_process(OS.get_executable_path(), args, false)
+	if _host_server_pid <= 0:
+		_host_server_pid = 0
+		_show_menu(true, "Could not start the local game server.")
+		return
+	await get_tree().create_timer(0.8).timeout
+	if not OS.is_process_running(_host_server_pid):
+		_host_server_pid = 0
+		_show_menu(true, "The local game server stopped before it was ready.")
+		return
+	url_edit.text = "ws://127.0.0.1:%d" % _host_server_port
+	_connect_to_url(url_edit.text)
+
+
+func _stop_host_server() -> void:
+	if _host_server_pid <= 0:
+		return
+	if OS.is_process_running(_host_server_pid):
+		OS.kill(_host_server_pid)
+	_host_server_pid = 0
+	_host_server_port = 0
 
 
 func _on_connection_ok() -> void:
@@ -943,6 +1054,7 @@ func _on_welcome(s: int) -> void:
 
 func _on_rejected(reason: String) -> void:
 	Net.leave()
+	_stop_host_server()
 	_show_menu(true, reason)
 
 
@@ -950,6 +1062,7 @@ func _on_connection_lost(reason: String) -> void:
 	_connected = false
 	slot = -1
 	Net.leave()
+	_stop_host_server()
 	_show_menu(true, reason + ". Is the server running?")
 
 
@@ -983,6 +1096,7 @@ func _on_snapshot(d: Dictionary) -> void:
 	var prev_state := state
 	state = d["st"]
 	map.set_doors_closed(state != Cfg.State.DEPLOYMENT)
+	map.apply_breakable_state(d.get("br", []))
 	loadout_ready = d.get("rd", [false, false])
 	if state == Cfg.State.LOADOUT:
 		if prev_state != Cfg.State.LOADOUT or (slot >= 0 and loadout_ready[slot]):
@@ -1008,9 +1122,6 @@ func _on_snapshot(d: Dictionary) -> void:
 		hud_layer.visible = not menu_layer.visible
 	if state == Cfg.State.DEPLOYMENT and prev_state != Cfg.State.DEPLOYMENT:
 		_reset_round_visuals()
-
-		sfx.menu_sound_player.stop()
-
 		sfx.play("start", -4.0)
 	if state == Cfg.State.COUNTDOWN and prev_state == Cfg.State.DEPLOYMENT:
 		sfx.play("start", -6.0)
@@ -1084,6 +1195,12 @@ func _handle_event(ev: Array) -> void:
 		"fireball":
 			blast_fx.append({"origin": ev[1], "radius": ev[2], "team": ev[3], "t": 0.55, "max": 0.55})
 			_spawn_magic_burst(ev[1], Color(1.0, 0.34, 0.04), Vector2.ZERO, 18)
+		"breakable":
+			var debris_pos: Vector2 = ev[2]
+			var is_glass: bool = ev.size() > 3 and str(ev[3]) == "glass_wall"
+			_spawn_magic_burst(debris_pos, Color("8edcec") if is_glass else Color("b8793f"), Vector2.ZERO, 34 if is_glass else 30)
+			_spawn_magic_burst(debris_pos, Color("d9fbff") if is_glass else Color("5d3b25"), Vector2.ZERO, 24 if is_glass else 18)
+			sfx.play("hit", -3.0)
 		"mega_shot":
 			var team: int = ev[1]
 			var from: Vector2 = ev[3]
@@ -1165,6 +1282,7 @@ func fog_list() -> Array:
 
 func _process(dt: float) -> void:
 	time += dt
+	_update_cached_layers(dt)
 	if menu_layer != null and menu_layer.visible and menu_panorama != null:
 		var travel := maxf(0.0, menu_panorama.size.x - get_viewport().get_visible_rect().size.x)
 		var flythrough := 0.5 - 0.5 * cos(time * 0.15)
@@ -1221,12 +1339,34 @@ func _process(dt: float) -> void:
 	if state == Cfg.State.PLAYING and !sfx.gameplay_sound_player.playing:
 		sfx.play("gameplay_music")
 	
-	if state == Cfg.State.ENDED and !sfx.menu_sound_player.playing:
+	if state == Cfg.State.ENDED and sfx.gameplay_sound_player.playing:
 		sfx.gameplay_sound_player.stop()
-		sfx.play("menu_music")
 
 	if state == Cfg.State.COUNTDOWN and !sfx.intro_sound_player.playing:
 		sfx.play("intro_sound")
+
+
+func _update_cached_layers(dt: float) -> void:
+	# Door leaves animate during deployment. The rest of the map is static and
+	# remains a single cached texture during the match.
+	_map_refresh_elapsed += dt
+	var map_state_changed := state != _last_map_state
+	var map_revision_changed := map.breakable_revision != _last_map_revision
+	if map_view != null and map_vp != null and (map_state_changed or map_revision_changed or (state == Cfg.State.DEPLOYMENT and _map_refresh_elapsed >= 1.0 / MAP_ANIMATION_FPS)):
+		_map_refresh_elapsed = 0.0
+		_last_map_state = state
+		_last_map_revision = map.breakable_revision
+		map_view.queue_redraw()
+		map_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+
+	# Visibility is cosmetic; the server still owns enemy visibility. Updating
+	# this soft mask at 30 Hz avoids visible stepping while still avoiding a
+	# offscreen render and hundreds of raycasts on every display frame.
+	_fog_refresh_elapsed += dt
+	if vision_mask != null and fog_vp != null and _fog_refresh_elapsed >= 1.0 / FOG_MASK_FPS:
+		_fog_refresh_elapsed = fmod(_fog_refresh_elapsed, 1.0 / FOG_MASK_FPS)
+		vision_mask.queue_redraw()
+		fog_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
 
 func _countdown_light_level() -> float:
 	var elapsed := clampf(Cfg.COUNTDOWN - countdown, 0.0, Cfg.COUNTDOWN)

@@ -14,10 +14,6 @@ var game  # ClientGame
 var reveal_all := false
 
 
-func _process(_dt: float) -> void:
-	queue_redraw()
-
-
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, Cfg.WORLD_SIZE), Color.BLACK)
 	if game == null:

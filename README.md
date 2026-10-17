@@ -60,6 +60,28 @@ From the repository root, run:
 > ```
 > To stop both servers, simply press `Ctrl + C` in the terminal.
 
+### Playing from Another PC on the Same Network
+
+Run the LAN-compatible web build on the host:
+
+```bash
+./run_local.sh --lan
+```
+
+On the other PC, open `http://<host-ip>:8080/`, then use
+`ws://<host-ip>:9080` in the Server field. Plain LAN HTTP cannot provide the
+secure browser APIs used by Godot audio and microphone input, so this mode is
+intentionally silent and uses keyboard/mouse controls. Use the HTTPS setup
+below when browser sound or voice commands are required.
+
+### Hosting from the Desktop Build
+
+The native desktop lobby also has a **Host Game** button. It starts the
+authoritative server on port `9080`, connects the host automatically, and stops
+the server when the host leaves or closes the game. The second player joins by
+entering `ws://<host-address>:9080` and pressing **Deploy**. Hosting from a web
+browser is not available because browsers cannot launch a local server process.
+
 ### Playing Without Installing Godot
 If you don't have Godot installed on your machine:
 1. Go to the **Actions** tab on our GitHub repository.

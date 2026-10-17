@@ -8,7 +8,6 @@ var _pool: Array[AudioStreamPlayer] = []
 var _next := 0
 
 var intro_sound_player: AudioStreamPlayer = AudioStreamPlayer.new()
-var menu_sound_player: AudioStreamPlayer = AudioStreamPlayer.new()
 var gameplay_sound_player: AudioStreamPlayer = AudioStreamPlayer.new()
 
 
@@ -32,8 +31,6 @@ func _ready() -> void:
 
 	intro_sound_player.stream = preload("res://assets/intro_sound.mp3")
 	add_child(intro_sound_player)
-	menu_sound_player.stream = preload("res://assets/menu_music.mp3")
-	add_child(menu_sound_player)
 	gameplay_sound_player.stream = preload("res://assets/gameplay_music.mp3")
 	add_child(gameplay_sound_player)
 
@@ -42,10 +39,9 @@ func play(sound: String, volume_db := 0.0) -> void:
 		"intro_sound":
 			intro_sound_player.play()
 			return
-		"menu_music":
-			menu_sound_player.play()
 		"gameplay_music":
 			gameplay_sound_player.play()
+			return
 
 	if not _streams.has(sound):
 		return

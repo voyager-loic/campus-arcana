@@ -11,12 +11,7 @@ var font: Font
 
 func _ready() -> void:
 	font = ThemeDB.fallback_font
-	set_process(true)
-
-
-func _process(_dt: float) -> void:
-	if game != null and game.state == Cfg.State.DEPLOYMENT:
-		queue_redraw()
+	queue_redraw()
 
 
 func door_open_amount() -> float:
@@ -58,7 +53,7 @@ func _draw() -> void:
 
 	for y in Cfg.MAP_H:
 		for x in Cfg.MAP_W:
-			if map.is_wall_tile(x, y) and not map.is_table_tile(x, y) and map.solid_kind(x, y) != map.SolidKind.VOID:
+			if map.is_wall_tile(x, y) and not map.is_table_tile(x, y) and map.solid_kind(x, y) not in [map.SolidKind.VOID, map.SolidKind.GLASS]:
 				draw_rect(Rect2(x * t + 4, y * t + 5, t, t), Color(0, 0, 0, 0.34))
 	for y in Cfg.MAP_H:
 		for x in Cfg.MAP_W:
@@ -77,6 +72,8 @@ func _draw() -> void:
 					pass
 				map.SolidKind.RUBBLE:
 					_draw_rubble(r, x, y)
+				map.SolidKind.GLASS:
+					pass # rendered as one continuous framed wall below
 	for table in map.tables:
 		var anchor: Vector2i = table["anchor"]
 		var table_rect: Rect2 = map.table_visual_rect(table)
@@ -87,6 +84,8 @@ func _draw() -> void:
 		_draw_counter(map.counter_visual_rect(map.counter_rects[idx]), idx)
 	for fixture in map.service_fixtures:
 		_draw_service_fixture(fixture)
+	for fixture in map.breakable_fixtures:
+		_draw_breakable_fixture(fixture)
 	_draw_main_room_clutter()
 	_draw_lower_room_clutter()
 
@@ -310,6 +309,44 @@ func _draw_table_chairs(table_rect: Rect2, seats: int, seed: int) -> void:
 			draw_rect(Rect2(p - Vector2(5, 5), Vector2(10, 10)), Color("c79a62"), false, 1.3)
 			var back_x := -5.0 if side < 0.0 else 5.0
 			draw_line(p + Vector2(back_x, -5), p + Vector2(back_x, 5), Color("e0bd86"), 2.0)
+
+
+func _draw_breakable_fixture(fixture: Dictionary) -> void:
+	if fixture["kind"] != "glass_wall":
+		return
+	var cells: Rect2i = fixture["rect"]
+	var cell_r := Rect2(Vector2(cells.position) * float(Cfg.TILE), Vector2(cells.size) * float(Cfg.TILE))
+	# The collision occupies one grid row, but the physical partition itself is
+	# a slim glass sheet centred in that row.
+	var r := Rect2(Vector2(cell_r.position.x, cell_r.get_center().y - 7.0), Vector2(cell_r.size.x, 14.0))
+	var destroyed := bool(fixture.get("destroyed", false))
+	if destroyed:
+		# The recessed floor track remains, while translucent shards communicate
+		# that the opening used to be sealed without retaining phantom collision.
+		draw_rect(Rect2(r.position + Vector2(0, r.size.y - 3), Vector2(r.size.x, 3)), Color("59656a"))
+		for i in 34:
+			var px := r.position.x + 7.0 + fmod(float(i * 47), r.size.x - 14.0)
+			var py := cell_r.position.y + 6.0 + float((i * 19) % 21)
+			var s := 3.0 + float(i % 4)
+			var shard := PackedVector2Array([Vector2(px, py - s), Vector2(px + s * 0.7, py + s), Vector2(px - s * 0.55, py + s * 0.45)])
+			draw_colored_polygon(shard, Color(0.48, 0.86, 0.94, 0.42 if i % 3 else 0.68))
+		return
+
+	# Thick steel frame with a continuous translucent glass surface. Mullions
+	# divide it into large panes so its scale reads clearly from the game camera.
+	draw_rect(Rect2(r.position + Vector2(4, 4), r.size), Color(0, 0, 0, 0.38))
+	draw_rect(r.grow(-3), Color(0.25, 0.72, 0.82, 0.28))
+	draw_rect(r.grow(-2), Color(0.67, 0.93, 0.98, 0.46), false, 1.5)
+	draw_rect(Rect2(r.position, Vector2(r.size.x, 3)), Color("6f7d82"))
+	draw_rect(Rect2(r.position + Vector2(0, r.size.y - 3), Vector2(r.size.x, 3)), Color("465257"))
+	draw_rect(Rect2(r.position, Vector2(5, r.size.y)), Color("849196"))
+	draw_rect(Rect2(r.position + Vector2(r.size.x - 5, 0), Vector2(5, r.size.y)), Color("465257"))
+	for x in range(int(r.position.x + 64), int(r.end.x), 64):
+		draw_rect(Rect2(Vector2(x - 2, r.position.y), Vector2(4, r.size.y)), Color("68777c"))
+	for fracture_x in [r.position.x + 103.0, r.position.x + 247.0]:
+		var c := Vector2(fracture_x, r.position.y + r.size.y * 0.48)
+		for end in [Vector2(-18, -10), Vector2(21, -13), Vector2(-24, 9), Vector2(17, 12)]:
+			draw_line(c, c + end, Color(0.82, 0.96, 1.0, 0.62), 1.2)
 
 
 func _draw_plant(r: Rect2, seed: int) -> void:

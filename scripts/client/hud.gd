@@ -5,6 +5,7 @@ const Cfg = preload("res://scripts/config.gd")
 const Voice = preload("res://scripts/client/voice.gd")
 
 const BAR_H := 108.0
+const DRAW_INTERVAL := 1.0 / 30.0
 const CARD_SHAKE_STEPS := [Vector2(-3, 1), Vector2(3, -1), Vector2(-2, -2), Vector2(2, 2), Vector2(-1, 1), Vector2(1, -1)]
 
 var game  # ClientGame
@@ -12,6 +13,7 @@ var font: Font
 var portrait_texture: Texture2D
 var card_texture: Texture2D
 var card_date := ""
+var _draw_elapsed := 0.0
 
 
 func _ready() -> void:
@@ -24,8 +26,11 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 
-func _process(_dt: float) -> void:
-	queue_redraw()
+func _process(dt: float) -> void:
+	_draw_elapsed += dt
+	if _draw_elapsed >= DRAW_INTERVAL:
+		_draw_elapsed = fmod(_draw_elapsed, DRAW_INTERVAL)
+		queue_redraw()
 
 
 func bar_top() -> float:

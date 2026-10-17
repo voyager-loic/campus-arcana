@@ -175,6 +175,7 @@ func on_loadout(id: int, ability_masks: Array) -> void:
 		_start_match()
 
 func _reset_squads() -> void:
+	map.reset_breakables()
 	for team in 2:
 		squads[team] = []
 		for i in Cfg.SQUAD_SIZE:
@@ -471,6 +472,10 @@ func _cast_return_projectile(caster: Soldier) -> void:
 		hit_distance = along
 	var start := caster.pos + direction * (Cfg.SOLDIER_RADIUS + 4.0)
 	var endpoint := caster.pos + direction * wall_distance
+	# The return projectile stops at cover, but collapses designated cracked
+	# tables so the next shot and subsequent movement can pass through.
+	var broken := map.damage_breakable_at(endpoint + direction * 1.5, 999)
+	_broadcast_breakable_destruction(broken)
 	var damage := 0
 	if victim != null:
 		endpoint = victim.pos
@@ -491,6 +496,7 @@ func _cast_return_projectile(caster: Soldier) -> void:
 func _cast_fireball(caster: Soldier, center: Vector2, def: Dictionary) -> void:
 	for team in 2:
 		events[team].append(["fireball", center, float(def["radius"]), caster.team])
+	_broadcast_breakable_destruction(map.damage_breakables(center, float(def["radius"]), int(def["damage"])))
 	for team in 2:
 		for victim: Soldier in squads[team]:
 			if not victim.alive or victim.pos.distance_to(center) > float(def["radius"]):
@@ -507,6 +513,12 @@ func _cast_fireball(caster: Soldier, center: Vector2, def: Dictionary) -> void:
 			var damage := _damage_after_defense(victim, int(def["damage"]))
 			if damage > 0:
 				_apply_damage(caster, victim, damage)
+
+
+func _broadcast_breakable_destruction(destroyed: Array) -> void:
+	for record in destroyed:
+		for team in 2:
+			events[team].append(["breakable", record[0], record[1], record[2]])
 
 
 func _damage_after_defense(victim: Soldier, raw_damage: int) -> int:
@@ -873,6 +885,7 @@ func _broadcast() -> void:
 			"sc": scanned,
 			"ea": enemy_alive,
 			"fg": fog_data,
+			"br": map.breakable_state(),
 			"cd": cooldowns[team].duplicate(),
 			"ev": events[team],
 			"rm": rematch_votes.duplicate(),

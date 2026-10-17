@@ -3,7 +3,6 @@ extends Node2D
 ## scan pings, damage indicators. Lives inside the (possibly rotated) World node.
 
 const Cfg = preload("res://scripts/config.gd")
-
 var game  # ClientGame
 var font: Font
 var soldier_texture: Texture2D
@@ -23,6 +22,8 @@ func _ready() -> void:
 
 
 func _process(_dt: float) -> void:
+	# Units and transient effects must follow display frames or movement and
+	# lighting interactions visibly stutter on high-refresh screens.
 	queue_redraw()
 
 
@@ -272,7 +273,7 @@ func _display_range(weapon: int, flags: int) -> float:
 
 
 func _draw_cone(origin: Vector2, facing: float, cone: float, radius: float, fill: Color, line: Color, fogs: Array) -> void:
-	var steps := maxi(3, int(ceil(cone / deg_to_rad(3.0))))
+	var steps := maxi(3, int(ceil(cone / deg_to_rad(6.0))))
 	var pts := PackedVector2Array([origin])
 	for i in steps + 1:
 		var a := facing - cone * 0.5 + cone * float(i) / steps
