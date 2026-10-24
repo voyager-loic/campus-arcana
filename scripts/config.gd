@@ -166,6 +166,9 @@ const SCAN_MOVE_MEMORY := 1.5
 # --- Match ----------------------------------------------------------------
 const COUNTDOWN := 3.0
 const DEPLOYMENT_DURATION := 5.0
+const DEPLOYMENT_DOOR_OPEN_TIME := 0.65
+const DEPLOYMENT_UNIT_STAGGER := 0.12
+const DEPLOYMENT_DOOR_CLOSE_TIME := 0.55
 
 enum State { WAITING, LOADOUT, DEPLOYMENT, COUNTDOWN, PLAYING, ENDED }
 

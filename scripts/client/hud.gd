@@ -384,10 +384,21 @@ func _draw() -> void:
 			_text_center(vw * 0.5, center_y, "Waiting for an opponent to join...", 30, Color(1, 1, 1, 0.9))
 			_text_center(vw * 0.5, center_y + 34, "Open this page in a second browser tab/window to test locally.", 16, Color(0.8, 0.8, 0.8))
 		Cfg.State.DEPLOYMENT:
-			_text_center(vw * 0.5, center_y, "SQUAD DEPLOYMENT", 34, Color(0.7, 0.94, 1.0))
+			var elapsed: float = Cfg.DEPLOYMENT_DURATION - float(game.deployment)
+			var phase: String = "OPENING ENTRANCES"
+			if elapsed >= Cfg.DEPLOYMENT_DOOR_OPEN_TIME:
+				phase = "SQUADS ENTERING"
+			if game.deployment <= Cfg.DEPLOYMENT_DOOR_CLOSE_TIME:
+				phase = "SEALING ARENA"
+			_text_center(vw * 0.5, center_y - 12, phase, 34, Color(0.7, 0.94, 1.0))
+			_text_center(vw * 0.5, center_y + 20, "FORMATION PROTOCOL", 13, Color(0.72, 0.78, 0.84, 0.82))
+			var progress: float = clampf(elapsed / Cfg.DEPLOYMENT_DURATION, 0.0, 1.0)
+			var bar := Rect2(vw * 0.5 - 132.0, center_y + 37.0, 264.0, 5.0)
+			draw_rect(bar, Color(0.05, 0.08, 0.11, 0.82))
+			draw_rect(Rect2(bar.position, Vector2(bar.size.x * progress, bar.size.y)), Color(0.38, 0.82, 1.0, 0.88))
 		Cfg.State.COUNTDOWN:
 			_text_center(vw * 0.5, center_y, "%d" % ceili(game.countdown), 72, Color(1, 1, 1))
-			_text_center(vw * 0.5, center_y + 40, "You are %s - your base is on the left" % Cfg.TEAM_NAMES[game.slot], 18, my_col)
+			_text_center(vw * 0.5, center_y + 40, "DUEL BEGINS · You are %s" % Cfg.TEAM_NAMES[game.slot], 18, my_col)
 		Cfg.State.ENDED:
 			var txt := "DRAW"
 			var col := Color(0.9, 0.9, 0.9)

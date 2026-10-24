@@ -119,6 +119,16 @@ func _draw() -> void:
 		draw_arc(fx["origin"], radius, 0.0, TAU, 64, Color(1.0, 0.65, 0.12, 0.9 * (1.0 - k)), 5.0)
 		draw_arc(fx["origin"], radius * 0.72, 0.0, TAU, 48, Color(1.0, 0.95, 0.55, 0.7 * (1.0 - k)), 2.0)
 
+	# A compact portal/threshold wake makes the staggered entrance readable.
+	# It is drawn directly with the units, so it adds no particle nodes or lights.
+	if game.state == Cfg.State.DEPLOYMENT:
+		for idx in game.enemies:
+			var entering_enemy: Dictionary = game.enemies[idx]
+			_draw_deployment_wake(entering_enemy["disp"], entering_enemy["disp_facing"], enemy_team, idx)
+		for entering_ally in game.own:
+			if entering_ally["alive"]:
+				_draw_deployment_wake(entering_ally["disp"], entering_ally["disp_facing"], my_team, entering_ally["idx"])
+
 	# Enemies
 	for idx in game.enemies:
 		var e: Dictionary = game.enemies[idx]
@@ -183,6 +193,25 @@ func _draw() -> void:
 		draw_arc(o["disp"], 27.0 + (1.0 - k) * 4.0, ang - 0.52, ang + 0.52, 14, col, 5.0)
 		var tip: Vector2 = o["disp"] + Vector2.from_angle(ang) * 39.0
 		draw_primitive(PackedVector2Array([tip, o["disp"] + Vector2.from_angle(ang - 0.20) * 29.0, o["disp"] + Vector2.from_angle(ang + 0.20) * 29.0]), PackedColorArray([col, col, col]), PackedVector2Array())
+
+
+func _draw_deployment_wake(p: Vector2, facing: float, team: int, idx: int) -> void:
+	var elapsed: float = Cfg.DEPLOYMENT_DURATION - float(game.deployment)
+	var delay: float = Cfg.DEPLOYMENT_DOOR_OPEN_TIME + idx * Cfg.DEPLOYMENT_UNIT_STAGGER
+	var since_entry: float = elapsed - delay
+	var col: Color = _team_color(team)
+	if since_entry < 0.0:
+		var waiting_pulse: float = 0.5 + 0.5 * sin(float(game.time) * 9.0 + idx)
+		draw_arc(p, Cfg.SOLDIER_RADIUS + 5.0 + waiting_pulse * 2.0, 0.0, TAU, 24, Color(col, 0.18 + waiting_pulse * 0.18), 1.5)
+		return
+	var burst: float = clampf(1.0 - since_entry / 0.85, 0.0, 1.0)
+	var trail: Vector2 = Vector2.from_angle(facing + PI)
+	draw_circle(p, Cfg.SOLDIER_RADIUS + 6.0, Color(col, 0.08 + burst * 0.12))
+	draw_arc(p, Cfg.SOLDIER_RADIUS + 5.0 + burst * 7.0, 0.0, TAU, 28, Color(col, 0.32 + burst * 0.48), 2.0)
+	if burst > 0.0:
+		for lane in [-1.0, 0.0, 1.0]:
+			var side: Vector2 = trail.orthogonal() * lane * 6.0
+			draw_line(p + side + trail * 8.0, p + side + trail * (22.0 + 15.0 * burst), Color(col, 0.32 * burst), 2.0)
 
 
 func _draw_soldier(p: Vector2, facing: float, team: int, idx: int, hp: int, flags: int, is_sel: bool, show_ui := true) -> void:

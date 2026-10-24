@@ -147,7 +147,7 @@ var _last_map_revision := -1
 var _last_door_state := -1
 var _last_vision_signature := -1
 
-# stupid var to make sound at start only play once
+# Prevent the countdown sting from restarting if its audio clip ends early.
 var intro_sound_played: bool = false
 
 
@@ -1247,9 +1247,18 @@ func _on_snapshot(d: Dictionary) -> void:
 		hud_layer.visible = not menu_layer.visible
 	if state == Cfg.State.DEPLOYMENT and prev_state != Cfg.State.DEPLOYMENT:
 		_reset_round_visuals()
-		sfx.play("start", -4.0)
+		intro_sound_played = false
+		sfx.intro_sound_player.stop()
+		sfx.play("door_open", -4.0)
+		for team in 2:
+			_spawn_magic_burst(map.entry_position(team, 1), Color(Cfg.TEAM_COLORS[team]), Vector2.ZERO, 12)
 	if state == Cfg.State.COUNTDOWN and prev_state == Cfg.State.DEPLOYMENT:
-		sfx.play("start", -6.0)
+		sfx.play("door_close", -4.0)
+		if not intro_sound_played:
+			intro_sound_played = true
+			sfx.play("intro_sound")
+	if state == Cfg.State.PLAYING and prev_state == Cfg.State.COUNTDOWN:
+		sfx.play("fight", -3.0)
 	if state == Cfg.State.WAITING and prev_state != Cfg.State.WAITING:
 		_reset_round_visuals()
 	deployment = d.get("dp", 0.0)
@@ -1336,9 +1345,15 @@ func _handle_event(ev: Array) -> void:
 		"breakable":
 			var debris_pos: Vector2 = ev[2]
 			var is_glass: bool = ev.size() > 3 and str(ev[3]) == "glass_wall"
-			_spawn_magic_burst(debris_pos, Color("8edcec") if is_glass else Color("b8793f"), Vector2.ZERO, 34 if is_glass else 30)
-			_spawn_magic_burst(debris_pos, Color("d9fbff") if is_glass else Color("5d3b25"), Vector2.ZERO, 24 if is_glass else 18)
-			sfx.play("glass_break" if is_glass else "wood_break", -2.0)
+			var destroyed: bool = bool(ev[4]) if ev.size() > 4 else true
+			if destroyed:
+				_spawn_magic_burst(debris_pos, Color("8edcec") if is_glass else Color("b8793f"), Vector2.ZERO, 34 if is_glass else 30)
+				_spawn_magic_burst(debris_pos, Color("d9fbff") if is_glass else Color("5d3b25"), Vector2.ZERO, 24 if is_glass else 18)
+				_add_screen_shake(debris_pos, 3.5 if is_glass else 2.5, 260.0)
+				sfx.play("glass_break" if is_glass else "wood_break", -2.0)
+			else:
+				_spawn_magic_burst(debris_pos, Color("bceef5") if is_glass else Color("c28a52"), Vector2.ZERO, 12 if is_glass else 9)
+				sfx.play("glass_crack" if is_glass else "wood_hit", -5.0)
 		"mega_shot":
 			var team: int = ev[1]
 			var from: Vector2 = ev[3]
@@ -1537,11 +1552,6 @@ func _process(dt: float) -> void:
 		if state == Cfg.State.DEPLOYMENT:
 			world_light.color = Color(1.0, 0.98, 0.90)
 		elif state == Cfg.State.COUNTDOWN:
-			# # play intro sound and make sure it doesn't play again
-			# if !intro_sound_played:
-			# 	sfx.play("intro_sound")
-			# 	intro_sound_played = true
-
 			var light_level := _countdown_light_level()
 			world_light.color = Color(light_level, light_level * 0.96, light_level * 0.82)
 		else:
@@ -1558,10 +1568,6 @@ func _process(dt: float) -> void:
 	
 	if state == Cfg.State.ENDED and sfx.gameplay_sound_player.playing:
 		sfx.gameplay_sound_player.stop()
-
-	if state == Cfg.State.COUNTDOWN and !sfx.intro_sound_player.playing:
-		sfx.play("intro_sound")
-
 
 func _update_cached_layers(dt: float) -> void:
 	# The detailed arena remains cached. Destruction refreshes only the small

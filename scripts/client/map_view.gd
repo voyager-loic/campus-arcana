@@ -101,11 +101,12 @@ func _draw_breakable_layer() -> void:
 			continue
 		var anchor: Vector2i = table["anchor"]
 		var table_rect: Rect2 = map.table_visual_rect(table)
+		var damage_ratio := 1.0 - float(table.get("hp", map.BREAKABLE_TABLE_HP)) / float(map.BREAKABLE_TABLE_HP)
 		draw_set_transform(table_rect.get_center(), float(table.get("angle", 0.0)), Vector2.ONE)
 		if not bool(table.get("tipped", false)) and not bool(table.get("destroyed", false)):
 			_draw_table_chairs(Rect2(-table_rect.size * 0.5, table_rect.size), table["seats"], anchor.x + anchor.y * 83)
 		_draw_table(Rect2(-table_rect.size * 0.5, table_rect.size), anchor.x, anchor.y,
-			bool(table.get("damaged", false)), bool(table.get("tipped", false)), bool(table.get("destroyed", false)))
+			bool(table.get("damaged", false)), bool(table.get("tipped", false)), bool(table.get("destroyed", false)), damage_ratio)
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	for fixture in map.breakable_fixtures:
 		_draw_breakable_fixture(fixture)
@@ -281,14 +282,20 @@ func _draw_wall(r: Rect2, x: int, y: int) -> void:
 		draw_line(r.position + Vector2(13, 15), r.position + Vector2(8, 28), Color("2b2722"), 1.5)
 
 
-func _draw_table(r: Rect2, x: int, y: int, damaged := false, tipped := false, destroyed := false) -> void:
+func _draw_table(r: Rect2, x: int, y: int, damaged := false, tipped := false, destroyed := false, damage_ratio := 0.0) -> void:
 	if destroyed:
-		# A collapsed tabletop is debris only; its collision was removed in MapData.
-		for i in 8:
-			var p := Vector2(-21 + (i * 17) % 43, -35 + (i * 29) % 71)
+		# Broken boards and chair pieces remain as persistent, walkable debris.
+		for i in 10:
+			var p := Vector2(-24 + (i * 17) % 51, -37 + (i * 29) % 75)
 			var size := Vector2(12 + (i % 3) * 5, 5 + ((i + 1) % 3) * 3)
-			draw_rect(Rect2(p - size * 0.5, size), Color("754523") if i % 2 == 0 else Color("a96a31"))
-			draw_line(p - size * 0.35, p + size * 0.35, Color("382217"), 1.3)
+			var board := PackedVector2Array([
+				p + Vector2(-size.x * 0.5, -size.y * 0.35), p + Vector2(size.x * 0.42, -size.y * 0.5),
+				p + Vector2(size.x * 0.5, size.y * 0.25), p + Vector2(-size.x * 0.35, size.y * 0.5),
+			])
+			draw_colored_polygon(board, Color("754523") if i % 2 == 0 else Color("a96a31"))
+			draw_polyline(board, Color("382217"), 1.2)
+		for leg in [Vector2(-27, -12), Vector2(18, 21), Vector2(-5, 34)]:
+			draw_line(leg - Vector2(7, 5), leg + Vector2(8, 6), Color("4b3020"), 3.0)
 		return
 	if tipped:
 		var slab := Rect2(Vector2(-7, r.position.y), Vector2(14, r.size.y))
@@ -297,6 +304,9 @@ func _draw_table(r: Rect2, x: int, y: int, damaged := false, tipped := false, de
 		draw_rect(slab.grow(-2), Color("75502d"))
 		draw_line(Vector2(-10, slab.position.y + 8), Vector2(-18, slab.position.y + 23), Color("38271d"), 3.0)
 		draw_line(Vector2(10, slab.end.y - 8), Vector2(19, slab.end.y - 22), Color("38271d"), 3.0)
+		if damage_ratio > 0.15:
+			draw_line(Vector2(-5, -18), Vector2(4, -4), Color("2b1b12"), 2.0)
+			draw_line(Vector2(4, -4), Vector2(-3, 11), Color("2b1b12"), 1.5)
 		return
 	draw_rect(Rect2(r.position + Vector2(3, 4), r.size), Color(0, 0, 0, 0.34))
 	draw_rect(r, Color("493321") if tipped else Color("815029"))
@@ -311,8 +321,15 @@ func _draw_table(r: Rect2, x: int, y: int, damaged := false, tipped := false, de
 	if damaged:
 		draw_line(r.position + Vector2(4, 18), r.position + Vector2(r.size.x - 5, 31), Color("332116"), 2.0)
 		draw_line(r.position + Vector2(r.size.x - 5, 31), r.position + Vector2(8, 48), Color("332116"), 1.5)
-	if tipped:
-		draw_rect(Rect2(r.position + Vector2(4, r.size.y * 0.46), Vector2(r.size.x - 8, 7)), Color("35271e"))
+	if damage_ratio > 0.15:
+		var crack := r.get_center() + Vector2(-3, -8)
+		draw_line(crack, crack + Vector2(-15, -12), Color("24160f"), 2.4)
+		draw_line(crack, crack + Vector2(17, -5), Color("24160f"), 2.0)
+		draw_line(crack, crack + Vector2(6, 19), Color("24160f"), 2.2)
+	if damage_ratio > 0.55:
+		var chip := PackedVector2Array([r.position + Vector2(0, 7), r.position + Vector2(10, 0), r.position + Vector2(17, 0), r.position + Vector2(8, 12)])
+		draw_colored_polygon(chip, Color("29201a"))
+		draw_line(r.get_center() + Vector2(5, 10), r.get_center() + Vector2(22, 25), Color("24160f"), 2.0)
 
 
 func _draw_table_chairs(table_rect: Rect2, seats: int, seed: int) -> void:
@@ -338,6 +355,7 @@ func _draw_breakable_fixture(fixture: Dictionary) -> void:
 	# a slim glass sheet centred in that row.
 	var r := Rect2(Vector2(cell_r.position.x, cell_r.get_center().y - 7.0), Vector2(cell_r.size.x, 14.0))
 	var destroyed := bool(fixture.get("destroyed", false))
+	var damage_ratio := 1.0 - float(fixture.get("hp", map.BREAKABLE_GLASS_HP)) / float(map.BREAKABLE_GLASS_HP)
 	if destroyed:
 		# The recessed floor track remains, while translucent shards communicate
 		# that the opening used to be sealed without retaining phantom collision.
@@ -353,7 +371,7 @@ func _draw_breakable_fixture(fixture: Dictionary) -> void:
 	# Thick steel frame with a continuous translucent glass surface. Mullions
 	# divide it into large panes so its scale reads clearly from the game camera.
 	draw_rect(Rect2(r.position + Vector2(4, 4), r.size), Color(0, 0, 0, 0.38))
-	draw_rect(r.grow(-3), Color(0.25, 0.72, 0.82, 0.28))
+	draw_rect(r.grow(-3), Color(0.25, 0.72, 0.82, 0.28 - damage_ratio * 0.10))
 	draw_rect(r.grow(-2), Color(0.67, 0.93, 0.98, 0.46), false, 1.5)
 	draw_rect(Rect2(r.position, Vector2(r.size.x, 3)), Color("6f7d82"))
 	draw_rect(Rect2(r.position + Vector2(0, r.size.y - 3), Vector2(r.size.x, 3)), Color("465257"))
@@ -361,7 +379,12 @@ func _draw_breakable_fixture(fixture: Dictionary) -> void:
 	draw_rect(Rect2(r.position + Vector2(r.size.x - 5, 0), Vector2(5, r.size.y)), Color("465257"))
 	for x in range(int(r.position.x + 64), int(r.end.x), 64):
 		draw_rect(Rect2(Vector2(x - 2, r.position.y), Vector2(4, r.size.y)), Color("68777c"))
-	for fracture_x in [r.position.x + 103.0, r.position.x + 247.0]:
+	var fracture_centres := [r.position.x + 103.0]
+	if damage_ratio > 0.15:
+		fracture_centres.append(r.position.x + 247.0)
+	if damage_ratio > 0.55:
+		fracture_centres.append(r.position.x + r.size.x * 0.68)
+	for fracture_x in fracture_centres:
 		var c := Vector2(fracture_x, r.position.y + r.size.y * 0.48)
 		for end in [Vector2(-18, -10), Vector2(21, -13), Vector2(-24, 9), Vector2(17, 12)]:
 			draw_line(c, c + end, Color(0.82, 0.96, 1.0, 0.62), 1.2)

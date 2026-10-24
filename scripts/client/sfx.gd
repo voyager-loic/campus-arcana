@@ -30,8 +30,13 @@ func _ready() -> void:
 	_streams["impact_miss"] = _tone(1050.0, 360.0, 0.075, 0.24)
 	_streams["glass_break"] = _noise(0.34, 11.0, 0.82, 0.92)
 	_streams["wood_break"] = _noise(0.30, 9.0, 0.24, 1.0)
+	_streams["glass_crack"] = _noise(0.12, 24.0, 0.72, 0.48)
+	_streams["wood_hit"] = _noise(0.11, 16.0, 0.19, 0.62)
 	_streams["explosion"] = _noise(0.46, 7.0, 0.16, 1.0)
 	_streams["cooldown_ready"] = _tone(580.0, 1280.0, 0.18, 0.38)
+	_streams["door_open"] = _tone(125.0, 360.0, 0.42, 0.42)
+	_streams["door_close"] = _tone(320.0, 105.0, 0.34, 0.48)
+	_streams["fight"] = _tone(520.0, 1180.0, 0.28, 0.58)
 	for i in 18:
 		var p := AudioStreamPlayer.new()
 		add_child(p)

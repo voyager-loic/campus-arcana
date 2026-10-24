@@ -17,8 +17,8 @@ const ROOM_LEFT := 27
 const ROOM_RIGHT := 78
 const ROOM_BREACH_LEFT := 72
 const ROOM_BREACH_RIGHT := 76
-const BREAKABLE_TABLE_HP := 40
-const BREAKABLE_GLASS_HP := 40
+const BREAKABLE_TABLE_HP := 70
+const BREAKABLE_GLASS_HP := 84
 
 enum SolidKind { NONE, WALL, TABLE, PLANT, COUNTER, VOID, RUBBLE, GLASS }
 enum Zone { HALL, STAIR }
@@ -159,42 +159,56 @@ func breakable_count() -> int:
 func breakable_state() -> Array:
 	var state := []
 	state.resize(breakable_count())
-	state.fill(false)
+	state.fill(0)
 	for table in tables:
 		if bool(table.get("breakable", false)):
-			state[int(table["breakable_id"])] = bool(table.get("destroyed", false))
+			state[int(table["breakable_id"])] = int(table.get("hp", BREAKABLE_TABLE_HP))
 	for fixture in breakable_fixtures:
-		state[int(fixture["breakable_id"])] = bool(fixture.get("destroyed", false))
+		state[int(fixture["breakable_id"])] = int(fixture.get("hp", BREAKABLE_GLASS_HP))
 	return state
 
 
-func _set_breakable_destroyed(table: Dictionary, destroyed: bool) -> bool:
-	if bool(table.get("destroyed", false)) == destroyed:
+func _set_breakable_hp(table: Dictionary, hp: int) -> bool:
+	var next_hp := clampi(hp, 0, BREAKABLE_TABLE_HP)
+	var old_hp := int(table.get("hp", BREAKABLE_TABLE_HP))
+	if old_hp == next_hp:
 		return false
-	var old_cells := table_collision_cells(table)
+	var was_destroyed := bool(table.get("destroyed", false))
+	var destroyed := next_hp <= 0
+	var old_cells: Array[Vector2i] = []
+	if not was_destroyed:
+		old_cells = table_collision_cells(table)
 	table["destroyed"] = destroyed
-	table["hp"] = 0 if destroyed else BREAKABLE_TABLE_HP
-	var new_cells := table_collision_cells(table)
-	for cell in old_cells:
-		grid[cell.y * W + cell.x] = SolidKind.NONE
-		astar.set_point_solid(cell, false)
-	for cell in new_cells:
-		grid[cell.y * W + cell.x] = SolidKind.TABLE
-		astar.set_point_solid(cell, true)
+	table["hp"] = next_hp
+	if was_destroyed != destroyed:
+		var new_cells: Array[Vector2i] = []
+		if not destroyed:
+			new_cells = table_collision_cells(table)
+		for cell in old_cells:
+			grid[cell.y * W + cell.x] = SolidKind.NONE
+			astar.set_point_solid(cell, false)
+		for cell in new_cells:
+			grid[cell.y * W + cell.x] = SolidKind.TABLE
+			astar.set_point_solid(cell, true)
 	breakable_revision += 1
 	return true
 
 
-func _set_breakable_fixture_destroyed(fixture: Dictionary, destroyed: bool) -> bool:
-	if bool(fixture.get("destroyed", false)) == destroyed:
+func _set_breakable_fixture_hp(fixture: Dictionary, hp: int) -> bool:
+	var next_hp := clampi(hp, 0, BREAKABLE_GLASS_HP)
+	var old_hp := int(fixture.get("hp", BREAKABLE_GLASS_HP))
+	if old_hp == next_hp:
 		return false
+	var was_destroyed := bool(fixture.get("destroyed", false))
+	var destroyed := next_hp <= 0
 	fixture["destroyed"] = destroyed
-	fixture["hp"] = 0 if destroyed else BREAKABLE_GLASS_HP
-	var rect: Rect2i = fixture["rect"]
-	for y in range(rect.position.y, rect.end.y):
-		for x in range(rect.position.x, rect.end.x):
-			grid[y * W + x] = SolidKind.NONE if destroyed else SolidKind.GLASS
-			astar.set_point_solid(Vector2i(x, y), destroyed == false)
+	fixture["hp"] = next_hp
+	if was_destroyed != destroyed:
+		var rect: Rect2i = fixture["rect"]
+		for y in range(rect.position.y, rect.end.y):
+			for x in range(rect.position.x, rect.end.x):
+				grid[y * W + x] = SolidKind.NONE if destroyed else SolidKind.GLASS
+				astar.set_point_solid(Vector2i(x, y), destroyed == false)
 	breakable_revision += 1
 	return true
 
@@ -206,28 +220,30 @@ func apply_breakable_state(state) -> bool:
 			continue
 		var id := int(table["breakable_id"])
 		if id < state.size():
-			changed = _set_breakable_destroyed(table, bool(state[id])) or changed
+			var hp := (0 if bool(state[id]) else BREAKABLE_TABLE_HP) if typeof(state[id]) == TYPE_BOOL else int(state[id])
+			changed = _set_breakable_hp(table, hp) or changed
 	for fixture in breakable_fixtures:
 		var id := int(fixture["breakable_id"])
 		if id < state.size():
-			changed = _set_breakable_fixture_destroyed(fixture, bool(state[id])) or changed
+			var hp := (0 if bool(state[id]) else BREAKABLE_GLASS_HP) if typeof(state[id]) == TYPE_BOOL else int(state[id])
+			changed = _set_breakable_fixture_hp(fixture, hp) or changed
 	return changed
 
 
 func reset_breakables() -> void:
 	for table in tables:
 		if bool(table.get("breakable", false)):
-			_set_breakable_destroyed(table, false)
+			_set_breakable_hp(table, BREAKABLE_TABLE_HP)
 	for fixture in breakable_fixtures:
-		_set_breakable_fixture_destroyed(fixture, false)
+		_set_breakable_fixture_hp(fixture, BREAKABLE_GLASS_HP)
 
 
-## Damage breakable cover touched by a circular blast. Returns [id, centre]
-## records for props that collapsed during this call.
+## Damage breakable cover touched by a circular blast. Every affected prop emits
+## [id, centre, kind, destroyed, damage dealt, hp, max hp] for client feedback.
 func damage_breakables(center: Vector2, radius: float, damage: int) -> Array:
-	var destroyed := []
+	var hits := []
 	if damage <= 0:
-		return destroyed
+		return hits
 	for table in tables:
 		if not bool(table.get("breakable", false)) or bool(table.get("destroyed", false)):
 			continue
@@ -240,9 +256,10 @@ func damage_breakables(center: Vector2, radius: float, damage: int) -> Array:
 				break
 		if not touched:
 			continue
-		table["hp"] = int(table.get("hp", BREAKABLE_TABLE_HP)) - damage
-		if int(table["hp"]) <= 0 and _set_breakable_destroyed(table, true):
-			destroyed.append([int(table["breakable_id"]), table_visual_rect(table).get_center(), "table"])
+		var old_hp := int(table.get("hp", BREAKABLE_TABLE_HP))
+		var next_hp := maxi(0, old_hp - damage)
+		if _set_breakable_hp(table, next_hp):
+			hits.append([int(table["breakable_id"]), table_visual_rect(table).get_center(), "table", next_hp <= 0, old_hp - next_hp, next_hp, BREAKABLE_TABLE_HP])
 	for fixture in breakable_fixtures:
 		if bool(fixture.get("destroyed", false)):
 			continue
@@ -251,10 +268,11 @@ func damage_breakables(center: Vector2, radius: float, damage: int) -> Array:
 		var nearest := Vector2(clampf(center.x, rect.position.x, rect.end.x), clampf(center.y, rect.position.y, rect.end.y))
 		if center.distance_to(nearest) > radius:
 			continue
-		fixture["hp"] = int(fixture.get("hp", BREAKABLE_GLASS_HP)) - damage
-		if int(fixture["hp"]) <= 0 and _set_breakable_fixture_destroyed(fixture, true):
-			destroyed.append([int(fixture["breakable_id"]), rect.get_center(), str(fixture["kind"])])
-	return destroyed
+		var old_hp := int(fixture.get("hp", BREAKABLE_GLASS_HP))
+		var next_hp := maxi(0, old_hp - damage)
+		if _set_breakable_fixture_hp(fixture, next_hp):
+			hits.append([int(fixture["breakable_id"]), rect.get_center(), str(fixture["kind"]), next_hp <= 0, old_hp - next_hp, next_hp, BREAKABLE_GLASS_HP])
+	return hits
 
 
 func damage_breakable_at(point: Vector2, damage: int) -> Array:

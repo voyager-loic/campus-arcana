@@ -475,7 +475,7 @@ func _cast_return_projectile(caster: Soldier) -> void:
 	# The return projectile stops at cover, but collapses designated cracked
 	# tables so the next shot and subsequent movement can pass through.
 	var broken := map.damage_breakable_at(endpoint + direction * 1.5, 999)
-	_broadcast_breakable_destruction(broken)
+	_broadcast_breakable_damage(broken)
 	var damage := 0
 	if victim != null:
 		endpoint = victim.pos
@@ -496,7 +496,7 @@ func _cast_return_projectile(caster: Soldier) -> void:
 func _cast_fireball(caster: Soldier, center: Vector2, def: Dictionary) -> void:
 	for team in 2:
 		events[team].append(["fireball", center, float(def["radius"]), caster.team])
-	_broadcast_breakable_destruction(map.damage_breakables(center, float(def["radius"]), int(def["damage"])))
+	_broadcast_breakable_damage(map.damage_breakables(center, float(def["radius"]), int(def["damage"])))
 	for team in 2:
 		for victim: Soldier in squads[team]:
 			if not victim.alive or victim.pos.distance_to(center) > float(def["radius"]):
@@ -515,10 +515,10 @@ func _cast_fireball(caster: Soldier, center: Vector2, def: Dictionary) -> void:
 				_apply_damage(caster, victim, damage)
 
 
-func _broadcast_breakable_destruction(destroyed: Array) -> void:
-	for record in destroyed:
+func _broadcast_breakable_damage(hits: Array) -> void:
+	for record in hits:
 		for team in 2:
-			events[team].append(["breakable", record[0], record[1], record[2]])
+			events[team].append(["breakable", record[0], record[1], record[2], record[3], record[4], record[5], record[6]])
 
 
 func _damage_after_defense(victim: Soldier, raw_damage: int) -> int:
@@ -566,11 +566,14 @@ func _physics_process(dt: float) -> void:
 	match state:
 		Cfg.State.DEPLOYMENT:
 			deployment -= dt
-			# Give both entrance doors time to finish opening before the squads
-			# cross the threshold and spread into their starting formation.
-			if Cfg.DEPLOYMENT_DURATION - deployment >= 0.55:
-				for team in 2:
-					for s: Soldier in squads[team]:
+			# Each squad crosses the threshold in a short stagger after the doors
+			# finish opening. This makes the formation readable without extending
+			# the authoritative deployment phase or changing final spawn positions.
+			var deployment_elapsed := Cfg.DEPLOYMENT_DURATION - deployment
+			for team in 2:
+				for s: Soldier in squads[team]:
+					var entry_delay := Cfg.DEPLOYMENT_DOOR_OPEN_TIME + s.idx * Cfg.DEPLOYMENT_UNIT_STAGGER
+					if deployment_elapsed >= entry_delay:
 						_move_soldier(s, dt)
 			if deployment <= 0.0:
 				deployment = 0.0
