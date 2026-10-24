@@ -194,6 +194,8 @@ func _draw_pixel_card_alert(pos: Vector2, alpha: float, main_color: Color, accen
 
 func _draw() -> void:
 	if game == null or game.slot < 0:
+		if game != null:
+			game.preview_ability = -1
 		return
 	var vw := size.x
 	var top := bar_top()
@@ -310,20 +312,26 @@ func _draw() -> void:
 		if not is_ready:
 			var frac := clampf(cd / float(def["cooldown"]), 0.0, 1.0)
 			draw_rect(Rect2(x, top + 7, 76 * frac, 94), Color(0, 0, 0, 0.45))
+			draw_rect(Rect2(x + 3, top + 96, 70 * (1.0 - frac), 3), Color(0.34, 0.78, 1.0, 0.9))
 		var flash: float = game.ability_flash[a]
 		if flash > 0.0:
 			draw_rect(r, Color(0.5, 1.0, 0.7, flash), false, 3.0)
+		var ready_flash: float = game.ability_ready_flash[a] if a < game.ability_ready_flash.size() else 0.0
+		if ready_flash > 0.0:
+			var pulse := 0.55 + 0.45 * sin(game.time * 18.0)
+			draw_rect(r.grow(2.0), Color(0.55, 1.0, 0.76, ready_flash * pulse), false, 4.0)
 		draw_rect(Rect2(x + 8, top + 16, 24, 24), Color(0.3, 0.3, 0.35))
 		_text(Vector2(x + 14, top + 34), Cfg.ABILITY_SLOT_KEYS[ability_slot], 15)
 		var ability_font_size := 10 if String(def["name"]).length() > 8 else 14
 		_text(Vector2(x + 8, top + 58), def["name"], ability_font_size, Color.WHITE if is_ready else Color(0.6, 0.6, 0.6))
 		_text(Vector2(x + 44, top + 34), "%d MP" % int(def["mp_cost"]), 9, Color(0.4, 0.72, 1.0))
 		if is_ready:
-			_text(Vector2(x + 8, top + 84), "say \"%s\"" % _voice_hint(a), 8, Color(0.6, 0.9, 0.7))
+			_text(Vector2(x + 8, top + 84), "READY" if ready_flash > 0.0 else "say \"%s\"" % _voice_hint(a), 10 if ready_flash > 0.0 else 8, Color(0.62, 1.0, 0.76))
 		elif cd > 0.0:
 			_text(Vector2(x + 8, top + 84), "COOL %.1fs" % cd, 10, Color(0.82, 0.72, 0.48))
 		else:
 			_text(Vector2(x + 8, top + 84), "MP CHARGING", 9, Color(0.35, 0.72, 1.0))
+	game.preview_ability = hovered_ability
 	if hovered_ability >= 0:
 		_draw_ability_tooltip(hovered_ability, mouse_pos, vw, top)
 

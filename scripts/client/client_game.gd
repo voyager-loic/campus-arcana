@@ -74,6 +74,9 @@ var scan_fx := []
 var blast_fx := []
 var messages := []
 var ability_flash := []
+var ability_ready_flash := []
+var damage_feedback := {}
+var preview_ability := -1
 var _particle_pool: Array[Dictionary] = []
 var _tracer_pool: Array[Dictionary] = []
 
@@ -87,6 +90,10 @@ var effect_density := 1.0
 var vision_pos_step := 2.0
 var vision_angle_step := 0.02
 var cone_step_deg := 6.0
+var screen_shake_enabled := true
+var _screen_shake_time := 0.0
+var _screen_shake_duration := 0.0
+var _screen_shake_strength := 0.0
 
 var world_rotation := 0.0
 var voice_pings := []  # world markers for voice orders: {pos, label, t, max}
@@ -150,6 +157,8 @@ func _ready() -> void:
 	cooldowns.fill(0.0)
 	ability_flash.resize(Cfg.ABILITY_COUNT)
 	ability_flash.fill(0.0)
+	ability_ready_flash.resize(Cfg.ABILITY_COUNT)
+	ability_ready_flash.fill(0.0)
 	_reset_own()
 	voice = Voice.new()
 	add_child(voice)
@@ -749,7 +758,7 @@ func _build_pause_menu() -> void:
 	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	pause_overlay.add_child(center)
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(430, 430)
+	panel.custom_minimum_size = Vector2(430, 470)
 	var panel_style := StyleBoxFlat.new()
 	panel_style.bg_color = Color(0.018, 0.04, 0.07, 0.98)
 	panel_style.border_color = Color(0.28, 0.82, 1.0, 0.92)
@@ -762,7 +771,7 @@ func _build_pause_menu() -> void:
 	panel.add_theme_stylebox_override("panel", panel_style)
 	center.add_child(panel)
 	var menu_content := Control.new()
-	menu_content.custom_minimum_size = Vector2(356, 366)
+	menu_content.custom_minimum_size = Vector2(356, 406)
 	panel.add_child(menu_content)
 
 	pause_main_panel = VBoxContainer.new()
@@ -842,6 +851,12 @@ func _build_pause_menu() -> void:
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.add_theme_color_override("font_color", Color(0.72, 0.82, 0.9))
 	pause_settings_panel.add_child(hint)
+	var shake_toggle := CheckButton.new()
+	shake_toggle.text = "SCREEN SHAKE (NEARBY EXPLOSIONS)"
+	shake_toggle.button_pressed = screen_shake_enabled
+	shake_toggle.add_theme_font_size_override("font_size", 15)
+	shake_toggle.toggled.connect(_on_screen_shake_toggled)
+	pause_settings_panel.add_child(shake_toggle)
 	var settings_spacer := Control.new()
 	settings_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	pause_settings_panel.add_child(settings_spacer)
@@ -926,8 +941,10 @@ func _load_graphics_settings() -> void:
 	var default_quality := GraphicsQuality.MEDIUM if OS.has_feature("web") else GraphicsQuality.HIGH
 	if settings.load(SETTINGS_PATH) == OK:
 		graphics_quality = clampi(int(settings.get_value("graphics", "quality", default_quality)), GraphicsQuality.LOW, GraphicsQuality.HIGH)
+		screen_shake_enabled = bool(settings.get_value("accessibility", "screen_shake", true))
 	else:
 		graphics_quality = default_quality
+		screen_shake_enabled = true
 	_set_quality_variables(graphics_quality)
 
 
@@ -962,6 +979,18 @@ func _on_graphics_quality_selected(quality: int) -> void:
 	var settings := ConfigFile.new()
 	settings.load(SETTINGS_PATH)
 	settings.set_value("graphics", "quality", graphics_quality)
+	settings.save(SETTINGS_PATH)
+
+
+func _on_screen_shake_toggled(enabled: bool) -> void:
+	screen_shake_enabled = enabled
+	if not enabled:
+		_screen_shake_time = 0.0
+		if camera != null:
+			camera.offset = Vector2.ZERO
+	var settings := ConfigFile.new()
+	settings.load(SETTINGS_PATH)
+	settings.set_value("accessibility", "screen_shake", enabled)
 	settings.save(SETTINGS_PATH)
 
 
@@ -1182,6 +1211,10 @@ func _reset_round_visuals() -> void:
 	corpses.clear()
 	scan_fx.clear()
 	blast_fx.clear()
+	damage_feedback.clear()
+	_screen_shake_time = 0.0
+	if camera != null:
+		camera.offset = Vector2.ZERO
 
 
 func _on_snapshot(d: Dictionary) -> void:
@@ -1248,6 +1281,8 @@ func _on_snapshot(d: Dictionary) -> void:
 				if g["idx"] == idx:
 					ghosts.erase(g)
 		var en: Dictionary = enemies[idx]
+		if en.has("hp") and int(e[3]) < int(en["hp"]):
+			_mark_damage_feedback(1 - slot, idx, int(en["hp"]) - int(e[3]))
 		en["pos"] = e[1]
 		en["facing"] = e[2]
 		en["hp"] = e[3]
@@ -1259,7 +1294,16 @@ func _on_snapshot(d: Dictionary) -> void:
 	scanned = d["sc"]
 	enemy_alive = d["ea"]
 	fogs = d["fg"]
+	var previous_cooldowns: Array = cooldowns.duplicate()
 	cooldowns = d["cd"]
+	var cooldown_finished := false
+	for ability in mini(previous_cooldowns.size(), cooldowns.size()):
+		if float(previous_cooldowns[ability]) > 0.05 and float(cooldowns[ability]) <= 0.05:
+			ability_ready_flash[ability] = 1.0
+			if selected >= 0 and has_equipped_ability(selected, ability):
+				cooldown_finished = true
+	if cooldown_finished:
+		sfx.play("cooldown_ready", -9.0)
 	rematch_votes = d["rm"]
 	names = d["names"]
 	for ev in d["ev"]:
@@ -1287,12 +1331,14 @@ func _handle_event(ev: Array) -> void:
 		"fireball":
 			blast_fx.append({"origin": ev[1], "radius": ev[2], "team": ev[3], "t": 0.55, "max": 0.55})
 			_spawn_magic_burst(ev[1], Color(1.0, 0.34, 0.04), Vector2.ZERO, 18)
+			_add_screen_shake(ev[1], 9.0, maxf(360.0, float(ev[2]) * 5.0))
+			sfx.play("explosion", -6.0)
 		"breakable":
 			var debris_pos: Vector2 = ev[2]
 			var is_glass: bool = ev.size() > 3 and str(ev[3]) == "glass_wall"
 			_spawn_magic_burst(debris_pos, Color("8edcec") if is_glass else Color("b8793f"), Vector2.ZERO, 34 if is_glass else 30)
 			_spawn_magic_burst(debris_pos, Color("d9fbff") if is_glass else Color("5d3b25"), Vector2.ZERO, 24 if is_glass else 18)
-			sfx.play("hit", -3.0)
+			sfx.play("glass_break" if is_glass else "wood_break", -2.0)
 		"mega_shot":
 			var team: int = ev[1]
 			var from: Vector2 = ev[3]
@@ -1301,9 +1347,12 @@ func _handle_event(ev: Array) -> void:
 			_spawn_tracer(from, endpoint, 0.42, spell_color, ev[5] > 0, 3.2)
 			_spawn_magic_burst(from, spell_color, (endpoint - from).normalized(), 18)
 			_spawn_magic_burst(endpoint, spell_color.lerp(Color.WHITE, 0.4), (endpoint - from).normalized(), 28 if ev[5] > 0 else 15)
+			if ev[5] > 0:
+				_add_screen_shake(endpoint, 5.0, 300.0)
 			if team == slot:
 				card_shots.append({"idx": ev[2], "t": 0.65})
 			sfx.play("cast_burst", -2.0)
+			sfx.play("impact_hit" if ev[5] > 0 else "impact_miss", -7.0)
 		"shot":
 			var team: int = ev[1]
 			var weapon: int = Cfg.SQUAD_WEAPONS[ev[2]]
@@ -1317,16 +1366,16 @@ func _handle_event(ev: Array) -> void:
 			_spawn_magic_burst(from, spell_color, Vector2.from_angle(own[ev[2]]["disp_facing"]) if team == slot and ev[2] < own.size() else Vector2.RIGHT, 8)
 			var snd: String = ["cast", "cast_fast", "cast_burst"][weapon]
 			sfx.play(snd, -10.0 if team == slot else -6.0)
-			if ev[5] > 0 and team != slot:
-				sfx.play("hit", -4.0)
+			sfx.play("impact_hit" if ev[5] > 0 else "impact_miss", -6.0 if ev[5] > 0 else -12.0)
 		"incoming":
 			hurts.append({"idx": ev[1], "angle": ev[2], "dmg": ev[3], "t": 1.2})
 			if ev[1] < own.size():
 				var incoming_dir := Vector2.from_angle(ev[2])
 				_spawn_magic_burst(own[ev[1]]["disp"] + incoming_dir * Cfg.SOLDIER_RADIUS, Color(1.0, 0.18, 0.72), -incoming_dir, 9)
-			sfx.play("cast_fast" if ev[3] == 0 else "hit", -12.0 if ev[3] == 0 else -4.0)
+			sfx.play("impact_miss" if ev[3] == 0 else "impact_hit", -12.0 if ev[3] == 0 else -3.0)
 		"card_hit":
 			card_hits.append({"idx": ev[1], "dmg": ev[2], "t": 0.75})
+			_mark_damage_feedback(slot, int(ev[1]), int(ev[2]))
 		"kill":
 			var team: int = ev[1]
 			var idx: int = ev[2]
@@ -1383,6 +1432,59 @@ func _recycle_effects(active: Array, pool: Array[Dictionary]) -> void:
 	active.clear()
 
 
+func _feedback_key(team: int, idx: int) -> String:
+	return "%d_%d" % [team, idx]
+
+
+func _mark_damage_feedback(team: int, idx: int, damage: int) -> void:
+	if team < 0 or idx < 0 or damage <= 0:
+		return
+	var key := _feedback_key(team, idx)
+	var prior: Dictionary = damage_feedback.get(key, {})
+	damage_feedback[key] = {
+		"t": 2.0,
+		"flash": 0.22,
+		"damage": damage + int(prior.get("damage", 0)) if float(prior.get("t", 0.0)) > 1.72 else damage,
+	}
+
+
+func damage_feedback_for(team: int, idx: int) -> Dictionary:
+	return damage_feedback.get(_feedback_key(team, idx), {})
+
+
+func _tick_damage_feedback(dt: float) -> void:
+	for key in damage_feedback.keys():
+		var feedback: Dictionary = damage_feedback[key]
+		feedback["t"] = maxf(0.0, float(feedback["t"]) - dt)
+		feedback["flash"] = maxf(0.0, float(feedback["flash"]) - dt)
+		if float(feedback["t"]) <= 0.0:
+			damage_feedback.erase(key)
+
+
+func _add_screen_shake(origin: Vector2, strength: float, radius: float) -> void:
+	if not screen_shake_enabled or selected < 0 or selected >= own.size() or not bool(own[selected].get("init", false)):
+		return
+	var distance := origin.distance_to(own[selected]["disp"])
+	if distance >= radius:
+		return
+	var proximity := 1.0 - distance / radius
+	_screen_shake_duration = 0.34
+	_screen_shake_time = _screen_shake_duration
+	_screen_shake_strength = maxf(_screen_shake_strength, strength * proximity)
+
+
+func _update_screen_shake(dt: float) -> void:
+	if camera == null:
+		return
+	if not screen_shake_enabled or _screen_shake_time <= 0.0:
+		camera.offset = Vector2.ZERO
+		_screen_shake_strength = 0.0
+		return
+	_screen_shake_time = maxf(0.0, _screen_shake_time - dt)
+	var fade := _screen_shake_time / maxf(_screen_shake_duration, 0.001)
+	camera.offset = Vector2(sin(time * 83.0), cos(time * 97.0)) * _screen_shake_strength * fade
+
+
 func fog_list() -> Array:
 	var out := []
 	for s in fogs:
@@ -1410,6 +1512,7 @@ func _process(dt: float) -> void:
 		if slot == 1:
 			focus = Cfg.WORLD_SIZE - focus
 		camera.position = focus
+	_update_screen_shake(dt)
 	for idx in enemies:
 		var e: Dictionary = enemies[idx]
 		e["disp"] = e["disp"].lerp(e["pos"], k)
@@ -1424,10 +1527,12 @@ func _process(dt: float) -> void:
 	_tick_list(ghosts, dt)
 	_tick_list(messages, dt)
 	_tick_list(voice_pings, dt)
+	_tick_damage_feedback(dt)
 	if mic_btn:
 		mic_btn.text = "Mic ON [V]" if voice.enabled else "Mic OFF [V]"
 	for a in Cfg.ABILITY_COUNT:
 		ability_flash[a] = maxf(0.0, ability_flash[a] - dt * 2.0)
+		ability_ready_flash[a] = maxf(0.0, ability_ready_flash[a] - dt)
 	if world_light:
 		if state == Cfg.State.DEPLOYMENT:
 			world_light.color = Color(1.0, 0.98, 0.90)
@@ -1639,6 +1744,7 @@ func _use_ability_at(ability: int, target: Vector2, via_voice: bool) -> bool:
 	if not _ability_ready(ability):
 		return false
 	Net.c_ability.rpc_id(1, ability, target, via_voice)
+	ability_flash[ability] = maxf(float(ability_flash[ability]), 0.8)
 	return true
 
 

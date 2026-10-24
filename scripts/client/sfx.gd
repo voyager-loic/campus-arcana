@@ -24,7 +24,15 @@ func _ready() -> void:
 	_streams["cast"] = _tone(420.0, 1320.0, 0.16, 0.48)
 	_streams["cast_fast"] = _tone(680.0, 1580.0, 0.10, 0.38)
 	_streams["cast_burst"] = _tone(280.0, 1040.0, 0.22, 0.58)
-	for i in 14:
+	# Combat feedback uses intentionally distinct timbres: a dull body impact,
+	# a short airy miss, brittle glass, heavy wood, and a bright ready chime.
+	_streams["impact_hit"] = _noise(0.14, 22.0, 0.30, 0.95)
+	_streams["impact_miss"] = _tone(1050.0, 360.0, 0.075, 0.24)
+	_streams["glass_break"] = _noise(0.34, 11.0, 0.82, 0.92)
+	_streams["wood_break"] = _noise(0.30, 9.0, 0.24, 1.0)
+	_streams["explosion"] = _noise(0.46, 7.0, 0.16, 1.0)
+	_streams["cooldown_ready"] = _tone(580.0, 1280.0, 0.18, 0.38)
+	for i in 18:
 		var p := AudioStreamPlayer.new()
 		add_child(p)
 		_pool.append(p)

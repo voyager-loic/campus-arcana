@@ -87,6 +87,7 @@ func _draw() -> void:
 				var wp: Vector2 = o["disp"] + Vector2.from_angle(o["watch"]) * 46.0
 				draw_line(o["disp"] + Vector2.from_angle(o["watch"]) * 30.0, wp, Color(1, 1, 0.6, 0.8), 2.0)
 				draw_circle(wp, 3.0, Color(1, 1, 0.6, 0.8))
+			_draw_ability_range_preview(o)
 
 	# Path targets of the other (unselected) soldiers, so squad orders are visible
 	for o in game.own:
@@ -177,17 +178,19 @@ func _draw() -> void:
 		if not o["alive"]:
 			continue
 		var k: float = h["t"] / 1.2
-		var col := Color(1.0, 0.15, 0.1, k) if h["dmg"] > 0 else Color(1.0, 0.7, 0.2, k * 0.8)
+		var col := Color(1.0, 0.12, 0.08, k) if h["dmg"] > 0 else Color(1.0, 0.7, 0.2, k * 0.8)
 		var ang: float = h["angle"]
-		draw_arc(o["disp"], 24.0, ang - 0.45, ang + 0.45, 12, col, 4.0)
-		var tip: Vector2 = o["disp"] + Vector2.from_angle(ang) * 34.0
-		draw_primitive(PackedVector2Array([tip, o["disp"] + Vector2.from_angle(ang - 0.18) * 27.0, o["disp"] + Vector2.from_angle(ang + 0.18) * 27.0]), PackedColorArray([col, col, col]), PackedVector2Array())
+		draw_arc(o["disp"], 27.0 + (1.0 - k) * 4.0, ang - 0.52, ang + 0.52, 14, col, 5.0)
+		var tip: Vector2 = o["disp"] + Vector2.from_angle(ang) * 39.0
+		draw_primitive(PackedVector2Array([tip, o["disp"] + Vector2.from_angle(ang - 0.20) * 29.0, o["disp"] + Vector2.from_angle(ang + 0.20) * 29.0]), PackedColorArray([col, col, col]), PackedVector2Array())
 
 
 func _draw_soldier(p: Vector2, facing: float, team: int, idx: int, hp: int, flags: int, is_sel: bool, show_ui := true) -> void:
 	var col := _team_color(team)
 	var weapon: int = Cfg.SQUAD_WEAPONS[idx]
 	var r := Cfg.SOLDIER_RADIUS
+	var feedback: Dictionary = game.damage_feedback_for(team, idx)
+	var hit_flash: float = clampf(float(feedback.get("flash", 0.0)) / 0.22, 0.0, 1.0)
 
 	# Selection highlight ring (pulsing)
 	if show_ui and is_sel:
@@ -218,6 +221,8 @@ func _draw_soldier(p: Vector2, facing: float, team: int, idx: int, hp: int, flag
 			sprite_mod.a = 0.34
 		elif flags & 32 != 0:
 			sprite_mod = sprite_mod.lerp(Color(1.0, 0.62, 0.18), 0.34)
+		if hit_flash > 0.0:
+			sprite_mod = sprite_mod.lerp(Color(1.0, 0.22, 0.12), 0.65 + hit_flash * 0.35)
 		draw_set_transform(p, facing, Vector2.ONE)
 		draw_texture_rect(soldier_textures[idx % soldier_textures.size()], Rect2(-24, -18, 48, 36), false, sprite_mod)
 		draw_set_transform_matrix(Transform2D.IDENTITY)
@@ -247,6 +252,11 @@ func _draw_soldier(p: Vector2, facing: float, team: int, idx: int, hp: int, flag
 		if frac > 0.0:
 			draw_arc(p, r + 3.0, -PI * 0.5 - game.world_rotation, -PI * 0.5 - game.world_rotation + TAU * frac, 32, hp_col, 3.0)
 
+		# Keep the circular health display as the single health indicator. Damage
+		# numbers accompany the brief sprite flash without adding a second bar.
+		if hit_flash > 0.0:
+			_draw_label(p + Vector2(0, -30.0 - (1.0 - hit_flash) * 5.0), "-%d" % int(feedback.get("damage", 0)), Color(1.0, 0.42, 0.28, hit_flash), 11)
+
 		if flags & 2 != 0:  # outrage
 			var rage_pulse := 0.55 + 0.35 * sin(game.time * 20.0)
 			draw_arc(p, r + 7.0, 0.0, TAU, 24, Color(1.0, 0.28, 0.04, rage_pulse), 3.0)
@@ -259,6 +269,41 @@ func _draw_soldier(p: Vector2, facing: float, team: int, idx: int, hp: int, flag
 		var label: String = str(idx + 1) if team == game.slot else ["A", "B", "C", "D"][idx]
 		draw_circle(p + Vector2(0, 1), 6.5, Color(0, 0, 0, 0.55))
 		_draw_label(p + Vector2(0, 2), label, Color.WHITE, 11)
+
+
+func _draw_ability_range_preview(unit: Dictionary) -> void:
+	var ability: int = game.preview_ability
+	if ability < 0 or ability >= Cfg.ABILITY_COUNT:
+		return
+	var def: Dictionary = Cfg.ABILITIES[ability]
+	var origin: Vector2 = unit["disp"]
+	var accent := Color(0.32, 0.92, 1.0, 0.82)
+	var fill := Color(0.20, 0.78, 1.0, 0.10)
+	if def.has("cast_range"):
+		var cast_range: float = float(def["cast_range"])
+		var raw_target: Vector2 = game.world.get_local_mouse_position()
+		var offset := raw_target - origin
+		var target := raw_target if offset.length() <= cast_range else origin + offset.normalized() * cast_range
+		draw_arc(origin, cast_range, 0.0, TAU, 80, Color(accent, 0.45), 2.0)
+		draw_line(origin, target, Color(accent, 0.5), 1.5)
+		draw_circle(target, float(def.get("radius", 18.0)), fill)
+		draw_arc(target, float(def.get("radius", 18.0)), 0.0, TAU, 48, accent, 3.0)
+	elif def.has("throw_distance"):
+		var target := origin + Vector2.from_angle(float(unit["disp_facing"])) * float(def["throw_distance"])
+		draw_line(origin, target, Color(accent, 0.6), 2.0)
+		draw_circle(target, float(def.get("radius", 18.0)), fill)
+		draw_arc(target, float(def.get("radius", 18.0)), 0.0, TAU, 48, accent, 3.0)
+	elif ability == Cfg.Ability.SCAN:
+		draw_circle(origin, float(def["radius"]), fill)
+		draw_arc(origin, float(def["radius"]), 0.0, TAU, 96, accent, 3.0)
+	elif def.has("distance"):
+		var direction := Vector2.from_angle(float(unit["disp_facing"]))
+		var destination := origin + direction * float(def["distance"])
+		draw_line(origin, destination, accent, 4.0)
+		draw_arc(destination, 14.0, 0.0, TAU, 24, accent, 3.0)
+	else:
+		draw_circle(origin, 34.0, fill)
+		draw_arc(origin, 34.0, 0.0, TAU, 36, accent, 3.0)
 
 
 func _draw_label(p: Vector2, text: String, col: Color, size: int) -> void:
