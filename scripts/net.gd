@@ -8,7 +8,7 @@ extends Node
 
 const Cfg = preload("res://scripts/config.gd")
 
-signal welcomed(slot: int)
+signal welcomed(slot: int, protocol_version: int)
 signal snapshot_received(data: Dictionary)
 signal rejected(reason: String)
 signal connection_ok
@@ -20,8 +20,12 @@ var peer: WebSocketMultiplayerPeer
 
 func _ready() -> void:
 	multiplayer.connected_to_server.connect(func(): connection_ok.emit())
-	multiplayer.connection_failed.connect(func(): connection_lost.emit("Could not connect to server"))
-	multiplayer.server_disconnected.connect(func(): connection_lost.emit("Disconnected from server"))
+	multiplayer.connection_failed.connect(func():
+		if peer != null:
+			connection_lost.emit("Could not connect to server"))
+	multiplayer.server_disconnected.connect(func():
+		if peer != null:
+			connection_lost.emit("Disconnected from server"))
 
 
 # --------------------------------------------------------------------------
@@ -61,11 +65,21 @@ func join(url: String) -> Error:
 	return OK
 
 
+static func normalize_server_url(raw_url: String) -> String:
+	var url := raw_url.strip_edges()
+	if url == "":
+		return ""
+	if not (url.begins_with("ws://") or url.begins_with("wss://")):
+		url = "ws://" + url
+	return url
+
+
 func leave() -> void:
-	if peer:
-		peer.close()
-	multiplayer.multiplayer_peer = null
+	var old_peer := peer
 	peer = null
+	multiplayer.multiplayer_peer = null
+	if old_peer:
+		old_peer.close()
 
 
 func is_online() -> bool:
@@ -77,9 +91,9 @@ func is_online() -> bool:
 # --------------------------------------------------------------------------
 
 @rpc("any_peer", "call_remote", "reliable")
-func c_hello(player_name: String) -> void:
+func c_hello(player_name: String, protocol_version: int) -> void:
 	if server:
-		server.on_hello(multiplayer.get_remote_sender_id(), player_name)
+		server.on_hello(multiplayer.get_remote_sender_id(), player_name, protocol_version)
 
 
 @rpc("any_peer", "call_remote", "reliable")
@@ -150,8 +164,8 @@ func c_rematch() -> void:
 # --------------------------------------------------------------------------
 
 @rpc("authority", "call_remote", "reliable")
-func s_welcome(slot: int) -> void:
-	welcomed.emit(slot)
+func s_welcome(slot: int, protocol_version: int) -> void:
+	welcomed.emit(slot, protocol_version)
 
 
 @rpc("authority", "call_remote", "unreliable_ordered")

@@ -5,6 +5,13 @@ extends RefCounted
 const DEFAULT_PORT := 9080
 const MAX_PLAYERS := 2
 const SQUAD_SIZE := 4
+## Increment whenever the multiplayer RPC or snapshot format becomes
+## incompatible. Mismatched builds are rejected with an actionable message.
+const PROTOCOL_VERSION := 1
+const CONNECTION_TIMEOUT := 8.0
+const SNAPSHOT_TIMEOUT := 6.0
+const SERVER_HELLO_TIMEOUT := 8.0
+const SNAPSHOT_RATE := 20.0
 
 const TILE := 32
 const MAP_W := 80

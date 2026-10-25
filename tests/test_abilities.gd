@@ -101,7 +101,9 @@ func _ready() -> void:
 	var blasts: Array = game.events[0].filter(func(ev): return ev[0] == "fireball")
 	var squad = game.squads[0]
 	var ahead_of := func(s) -> bool:
-		return blasts.any(func(ev): return absf(ev[1].y - s.pos.y) < 1.0 and ev[1].x > s.pos.x + 32.0)
+		var requested: Vector2 = s.pos + Vector2.from_angle(s.facing) * Cfg.VOICE_CAST_DISTANCE
+		var expected: Vector2 = game._ability_target(s, requested, float(Cfg.ABILITIES[Cfg.Ability.FIREBALL]["cast_range"]))
+		return blasts.any(func(ev): return ev[1].distance_to(expected) < 1.0)
 	_check(blasts.size() == 2 and ahead_of.call(squad[0]) and ahead_of.call(squad[2]),
 		"Voice Fireball: each equipped caster blasts straight ahead of itself")
 	_check(squad[0].mp < Cfg.SOLDIER_MP and squad[2].mp < Cfg.SOLDIER_MP and squad[1].mp == Cfg.SOLDIER_MP \

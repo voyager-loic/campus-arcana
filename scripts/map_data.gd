@@ -17,7 +17,9 @@ const ROOM_LEFT := 27
 const ROOM_RIGHT := 78
 const ROOM_BREACH_LEFT := 72
 const ROOM_BREACH_RIGHT := 76
-const BREAKABLE_TABLE_HP := 70
+# A standard Fireball deals 42 damage: cracked tables collapse in one impact,
+# while the reinforced glass entrance survives the first and breaks on the second.
+const BREAKABLE_TABLE_HP := 42
 const BREAKABLE_GLASS_HP := 84
 
 enum SolidKind { NONE, WALL, TABLE, PLANT, COUNTER, VOID, RUBBLE, GLASS }
@@ -690,24 +692,103 @@ func _nearest_open_tile(t: Vector2i) -> Vector2i:
 	return t
 
 
+## Whether a complete soldier circle fits at this point. Pathfinding works on
+## tile centres, but mouse and voice orders can land anywhere inside a tile.
+## Checking the full circle prevents final waypoints from hugging furniture or
+## being pushed to a surprising side of a wall by collision resolution.
+func _point_is_clear(p: Vector2, r: float) -> bool:
+	if p.x < r or p.y < r or p.x > Cfg.WORLD_SIZE.x - r or p.y > Cfg.WORLD_SIZE.y - r:
+		return false
+	var x0 := floori((p.x - r) / T)
+	var x1 := floori((p.x + r) / T)
+	var y0 := floori((p.y - r) / T)
+	var y1 := floori((p.y + r) / T)
+	for ty in range(y0, y1 + 1):
+		for tx in range(x0, x1 + 1):
+			if not is_wall_tile(tx, ty):
+				continue
+			var tile_rect := Rect2(Vector2(tx, ty) * float(T), Vector2(T, T))
+			var nearest := Vector2(
+				clampf(p.x, tile_rect.position.x, tile_rect.end.x),
+				clampf(p.y, tile_rect.position.y, tile_rect.end.y)
+			)
+			if p.distance_squared_to(nearest) < r * r:
+				return false
+	return true
+
+
+func _route_length(points: PackedVector2Array) -> float:
+	var total := 0.0
+	for i in range(1, points.size()):
+		total += points[i - 1].distance_to(points[i])
+	return total
+
+
+## Pick the closest reachable tile around an obstructed order. Equal-distance
+## candidates are resolved by route length, so clicking a long partition stops
+## on the unit's current side rather than occasionally ordering a long detour.
+func _nearest_reachable_tile(from_tile: Vector2i, target: Vector2i, max_radius := 12) -> Vector2i:
+	for radius in range(1, max_radius + 1):
+		var best := Vector2i(-1, -1)
+		var best_distance := INF
+		var best_route := INF
+		for dy in range(-radius, radius + 1):
+			for dx in range(-radius, radius + 1):
+				if absi(dx) != radius and absi(dy) != radius:
+					continue
+				var candidate := target + Vector2i(dx, dy)
+				if is_wall_tile(candidate.x, candidate.y):
+					continue
+				var centre := (Vector2(candidate) + Vector2(0.5, 0.5)) * float(T)
+				if not _point_is_clear(centre, Cfg.SOLDIER_RADIUS):
+					continue
+				var route := astar.get_point_path(from_tile, candidate, false)
+				if route.is_empty() and candidate != from_tile:
+					continue
+				var distance := Vector2(dx, dy).length_squared()
+				var route_length := _route_length(route)
+				if distance < best_distance or (is_equal_approx(distance, best_distance) and route_length < best_route):
+					best = candidate
+					best_distance = distance
+					best_route = route_length
+		if best.x >= 0:
+			return best
+	return _nearest_open_tile(target)
+
+
+## Resolve an arbitrary player order to a reachable, radius-safe destination.
+## Public so the client can keep queued voice destinations in sync with the
+## authoritative server without exposing the route itself.
+func navigation_destination(from: Vector2, to: Vector2, r := Cfg.SOLDIER_RADIUS) -> Vector2:
+	to.x = clampf(to.x, r, Cfg.WORLD_SIZE.x - r)
+	to.y = clampf(to.y, r, Cfg.WORLD_SIZE.y - r)
+	var from_tile := _nearest_open_tile(Vector2i(floori(from.x / T), floori(from.y / T)))
+	var target_tile := Vector2i(floori(to.x / T), floori(to.y / T))
+	if not is_wall_tile(target_tile.x, target_tile.y):
+		var adjusted := resolve_circle(to, r)
+		var adjusted_tile := Vector2i(floori(adjusted.x / T), floori(adjusted.y / T))
+		var route := astar.get_point_path(from_tile, adjusted_tile, false)
+		if _point_is_clear(adjusted, r) and (adjusted_tile == from_tile or not route.is_empty()):
+			return adjusted
+	var nearest := _nearest_reachable_tile(from_tile, target_tile)
+	return (Vector2(nearest) + Vector2(0.5, 0.5)) * float(T)
+
+
 ## Returns waypoints (pixel coords) from `from` to `to` (excluding the start).
 func find_path(from: Vector2, to: Vector2) -> PackedVector2Array:
-	to.x = clampf(to.x, 1.0, Cfg.WORLD_SIZE.x - 1.0)
-	to.y = clampf(to.y, 1.0, Cfg.WORLD_SIZE.y - 1.0)
 	var ft := _nearest_open_tile(Vector2i(floori(from.x / T), floori(from.y / T)))
-	var tt_raw := Vector2i(floori(to.x / T), floori(to.y / T))
-	var tt := _nearest_open_tile(tt_raw)
-	var pts := astar.get_point_path(ft, tt, true)
+	var destination := navigation_destination(from, to)
+	var tt := Vector2i(floori(destination.x / T), floori(destination.y / T))
+	var pts := astar.get_point_path(ft, tt, false)
 	var out := PackedVector2Array()
 	for i in range(1, pts.size()):
 		out.append(pts[i])
-	# Final waypoint: the exact click location if it is on open floor.
-	if tt == tt_raw and not pts.is_empty() and Vector2i(floori(pts[pts.size() - 1].x / T), floori(pts[pts.size() - 1].y / T)) == tt:
-		var exact := resolve_circle(to, Cfg.SOLDIER_RADIUS)
+	# Preserve the exact order position after the grid route reaches its tile.
+	if not pts.is_empty() and Vector2i(floori(pts[pts.size() - 1].x / T), floori(pts[pts.size() - 1].y / T)) == tt:
 		if out.is_empty():
-			out.append(exact)
+			out.append(destination)
 		else:
-			out[out.size() - 1] = exact
+			out[out.size() - 1] = destination
 	return out
 
 

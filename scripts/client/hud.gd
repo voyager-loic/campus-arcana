@@ -4,7 +4,7 @@ extends Control
 const Cfg = preload("res://scripts/config.gd")
 const Voice = preload("res://scripts/client/voice.gd")
 
-const BAR_H := 108.0
+const BAR_H := 118.0
 const DRAW_INTERVAL := 1.0 / 30.0
 const CARD_SHAKE_STEPS := [Vector2(-3, 1), Vector2(3, -1), Vector2(-2, -2), Vector2(2, 2), Vector2(-1, 1), Vector2(1, -1)]
 
@@ -114,7 +114,11 @@ func _draw_voice_panel(vw: float, top: float) -> void:
 		if h["age"] < Voice.HISTORY_TTL:
 			entries.append(h)
 	entries = entries.slice(maxi(0, entries.size() - 3))
-	if not v.enabled and not problem and entries.is_empty() and v.interim_text == "":
+	# Permanent availability is already shown in the command-deck card. Keep
+	# this larger panel for actual voice activity and command history only, so an
+	# unsupported or blocked microphone is not announced twice on screen.
+	var has_voice_activity: bool = v.enabled and v.status == "listening"
+	if entries.is_empty() and v.interim_text == "" and not has_voice_activity:
 		return
 
 	const W := 340.0
@@ -123,8 +127,8 @@ func _draw_voice_panel(vw: float, top: float) -> void:
 	var x0: float = vw - W - 8.0
 	var y0: float = top - 8.0 - h_total
 	var col := _mic_color()
-	draw_rect(Rect2(x0, y0, W, h_total), Color(0.03, 0.04, 0.06, 0.8))
-	draw_rect(Rect2(x0, y0, W, h_total), Color(col, 0.55), false, 1.5)
+	draw_rect(Rect2(x0, y0, W, h_total), Color(0.008, 0.018, 0.045, 0.92))
+	draw_rect(Rect2(x0, y0, W, h_total), Color(col, 0.72), false, 1.5)
 
 	# Header: mic icon, state, level bars while speech is detected
 	_draw_mic_icon(Vector2(x0 + 14, y0 + 14), col)
@@ -132,7 +136,7 @@ func _draw_voice_panel(vw: float, top: float) -> void:
 	_text(Vector2(x0 + W - 70, y0 + 19), "V to toggle", 10, Color(0.5, 0.55, 0.6))
 	if v.enabled:
 		for i in 5:
-			var lvl: float = 0.25 + 0.75 * absf(sin(game.time * (7.0 + i * 1.7) + i)) if v.speaking else 0.15
+			var lvl: float = (0.72 if game.reduced_flashes else 0.25 + 0.75 * absf(sin(game.time * (7.0 + i * 1.7) + i))) if v.speaking else 0.15
 			var bh := 12.0 * lvl
 			draw_rect(Rect2(x0 + W - 108 + i * 5, y0 + 20 - bh, 3, bh), Color(col, 0.9))
 	draw_line(Vector2(x0 + 6, y0 + 27), Vector2(x0 + W - 6, y0 + 27), Color(1, 1, 1, 0.08), 1.0)
@@ -192,6 +196,56 @@ func _draw_pixel_card_alert(pos: Vector2, alpha: float, main_color: Color, accen
 	draw_rect(Rect2(p + Vector2(1, 1), Vector2(2, 10)), Color(1.0, 0.95, 0.62, alpha))
 
 
+func _edge_intersection(screen_pos: Vector2, bounds: Rect2) -> Vector2:
+	var centre := bounds.get_center()
+	var direction := screen_pos - centre
+	if direction.length_squared() < 0.001:
+		return centre
+	var half := bounds.size * 0.5
+	var scale_x := half.x / maxf(absf(direction.x), 0.001)
+	var scale_y := half.y / maxf(absf(direction.y), 0.001)
+	return centre + direction * minf(scale_x, scale_y)
+
+
+func _draw_edge_marker(screen_pos: Vector2, bounds: Rect2, col: Color, label: String, hostile: bool) -> void:
+	var edge := _edge_intersection(screen_pos, bounds)
+	var direction := (screen_pos - bounds.get_center()).normalized()
+	var side := direction.orthogonal()
+	var tip := edge + direction * 3.0
+	var base := edge - direction * 11.0
+	var marker := PackedVector2Array([tip, base + side * 6.0, base - side * 6.0])
+	if game.high_contrast_markers:
+		draw_polyline(PackedVector2Array([tip, base + side * 6.0, base - side * 6.0, tip]), Color.BLACK, 4.0)
+	draw_colored_polygon(marker, Color(col, 0.92))
+	draw_polyline(PackedVector2Array([tip, base + side * 6.0, base - side * 6.0, tip]), Color(0.02, 0.03, 0.04, 0.92), 1.5)
+	var badge := base - direction * 8.0
+	draw_circle(badge, 8.0, Color(0.02, 0.03, 0.05, 0.88))
+	draw_arc(badge, 8.0, 0.0, TAU, 18, col, 1.5)
+	_text(Vector2(badge.x - 7.0, badge.y + 4.0), ("!" if hostile else "") + label, 9, Color.WHITE, HORIZONTAL_ALIGNMENT_CENTER, 14.0)
+
+
+func _draw_offscreen_indicators(vw: float, hud_top: float) -> void:
+	if game.state != Cfg.State.PLAYING or game.world == null:
+		return
+	var bounds := Rect2(28.0, 34.0, maxf(1.0, vw - 56.0), maxf(1.0, hud_top - 54.0))
+	var canvas_transform: Transform2D = game.world.get_global_transform_with_canvas()
+	var my_col: Color = game.team_color(game.slot)
+	var enemy_col: Color = game.team_color(1 - game.slot)
+	for unit in game.own:
+		if not bool(unit.get("alive", false)) or int(unit.get("idx", -1)) == game.selected:
+			continue
+		var world_pos: Vector2 = unit.get("disp", Vector2.ZERO)
+		var screen_pos: Vector2 = canvas_transform * world_pos
+		if not bounds.has_point(screen_pos):
+			_draw_edge_marker(screen_pos, bounds, my_col, str(int(unit["idx"]) + 1), false)
+	for idx in game.enemies:
+		var enemy: Dictionary = game.enemies[idx]
+		var world_pos: Vector2 = enemy.get("disp", Vector2.ZERO)
+		var screen_pos: Vector2 = canvas_transform * world_pos
+		if not bounds.has_point(screen_pos):
+			_draw_edge_marker(screen_pos, bounds, enemy_col, ["A", "B", "C", "D"][int(idx)], true)
+
+
 func _draw() -> void:
 	if game == null or game.slot < 0:
 		if game != null:
@@ -199,12 +253,15 @@ func _draw() -> void:
 		return
 	var vw := size.x
 	var top := bar_top()
-	var my_col: Color = Cfg.TEAM_COLORS[game.slot]
-	var en_col: Color = Cfg.TEAM_COLORS[1 - game.slot]
+	var my_col: Color = game.team_color(game.slot)
+	var en_col: Color = game.team_color(1 - game.slot)
 
-	# ---- Bottom bar ------------------------------------------------------
-	draw_rect(Rect2(0, top, vw, BAR_H), Color(0.07, 0.08, 0.10))
-	draw_line(Vector2(0, top), Vector2(vw, top), my_col.darkened(0.3), 2.0)
+	# ---- Bottom command deck --------------------------------------------
+	draw_rect(Rect2(0, top, vw, BAR_H), Color(0.006, 0.014, 0.035, 0.98))
+	draw_rect(Rect2(0, top + 5, vw, BAR_H - 5), Color(0.016, 0.028, 0.055, 0.96))
+	draw_line(Vector2(0, top), Vector2(vw, top), Color(my_col, 0.92), 2.0)
+	draw_line(Vector2(0, top + 4), Vector2(vw, top + 4), Color(0.46, 0.34, 0.90, 0.52), 1.0)
+	_draw_offscreen_indicators(vw, top)
 
 	const SQUAD_NAMES := ["Alpha", "Bravo", "Charlie", "Delta"]
 	# Soldier cards
@@ -215,7 +272,7 @@ func _draw() -> void:
 		var motion_alert := maxf(hit_alert, shot_alert)
 		var shake_strength := clampf((motion_alert - 0.52) / 0.48, 0.0, 1.0)
 		var shake := Vector2.ZERO
-		if shake_strength > 0.0:
+		if shake_strength > 0.0 and not game.reduced_flashes:
 			shake = CARD_SHAKE_STEPS[(int(game.time * 48.0) + i * 3) % CARD_SHAKE_STEPS.size()] * shake_strength
 		draw_set_transform(shake)
 		var x := 6.0 + i * 158.0
@@ -227,8 +284,9 @@ func _draw() -> void:
 		else:
 			draw_rect(r, Color(0.92, 0.94, 0.98) if alive else Color(0.45, 0.45, 0.48))
 		if sel:
-			draw_rect(r, Color(1.0, 0.83, 0.28, 1.0), false, 3.0)
-		_text(Vector2(x + 8, top + 22), "EHT züri", 10, Color(0.02, 0.025, 0.035) if alive else Color(0.4, 0.4, 0.42))
+			draw_rect(r.grow(2.0), Color(0.42, 0.94, 1.0, 1.0), false, 3.0)
+			draw_line(Vector2(r.position.x, r.end.y + 3), Vector2(r.end.x, r.end.y + 3), Color(0.62, 0.44, 1.0, 0.9), 2.0)
+		_text(Vector2(x + 8, top + 22), "CAMPUS ARC.", 8, Color(0.02, 0.025, 0.035) if alive else Color(0.4, 0.4, 0.42))
 		var equipped_badges: Array = game.equipped_abilities(i)
 		const ABILITY_BADGES := ["FG", "SC", "RU", "OR", "FL", "FM", "FB", "IN"]
 		for badge_idx in mini(3, equipped_badges.size()):
@@ -243,7 +301,7 @@ func _draw() -> void:
 		if hit_alert > 0.0 and shot_alert > 0.0:
 			show_red = int(game.time * 8.0) % 2 == 0
 		var alert_strength := hit_alert if show_red else shot_alert
-		var alert_pulse := alert_strength * (0.65 + 0.35 * absf(sin(game.time * 18.0)))
+		var alert_pulse := alert_strength * (0.82 if game.reduced_flashes else 0.65 + 0.35 * absf(sin(game.time * 18.0)))
 		var alert_color := Color(1.0, 0.055, 0.025) if show_red else Color(1.0, 0.72, 0.04)
 		var alert_accent := Color(1.0, 0.78, 0.12) if show_red else Color(1.0, 0.98, 0.55)
 		if portrait_texture:
@@ -255,18 +313,19 @@ func _draw() -> void:
 		var ink := Color(0.025, 0.035, 0.055) if alive else Color(0.28, 0.28, 0.3)
 		_text(Vector2(x + 10, top + 47), "%d" % (i + 1), 13, my_col if alive else Color(0.4, 0.4, 0.4))
 		_text(Vector2(x + 25, top + 47), "%s · %s" % [SQUAD_NAMES[i], w["name"]], 11, ink)
-		var hp: float = o.get("hp", Cfg.SOLDIER_HP)
 		if alive:
-			var frac := hp / float(Cfg.SOLDIER_HP)
-			_text(Vector2(x + 10, top + 54), "HP", 6, ink)
-			draw_rect(Rect2(x + 24, top + 49, 85, 5), Color(0.06, 0.08, 0.11, 0.55))
-			draw_rect(Rect2(x + 24, top + 49, 85 * frac, 5), Color(0.28, 0.95, 0.36).lerp(Color(1.0, 0.25, 0.2), 1.0 - frac))
+			var flags: int = o.get("flags", 0)
+			var order_state := "HOLDING"
+			if flags & 1:
+				order_state = "MOVING"
+			elif float(o.get("watch", INF)) != INF:
+				order_state = "WATCHING"
+			_text(Vector2(x + 10, top + 54), "ORDER  %s" % order_state, 7, Color(0.08, 0.28, 0.42) if sel else ink)
 			var mp: float = o.get("mp", Cfg.SOLDIER_MP)
 			var mp_frac := clampf(mp / Cfg.SOLDIER_MP, 0.0, 1.0)
 			_text(Vector2(x + 10, top + 62), "MP", 6, ink)
 			draw_rect(Rect2(x + 24, top + 57, 85, 5), Color(0.025, 0.07, 0.13, 0.72))
 			draw_rect(Rect2(x + 24, top + 57, 85 * mp_frac, 5), Color(0.18, 0.58, 1.0))
-			var flags: int = o.get("flags", 0)
 			var tags := ""
 			if flags & 2: tags += "RAGE "
 			if flags & 4: tags += "RUSH"
@@ -278,11 +337,10 @@ func _draw() -> void:
 			_text(Vector2(x + 12, top + 62), "K.I.A.", 14, Color(0.72, 0.08, 0.08))
 			draw_line(Vector2(x + 7, top + 12), Vector2(x + 145, top + 96), Color(0.7, 0.05, 0.05, 0.85), 4.0)
 			draw_line(Vector2(x + 145, top + 12), Vector2(x + 7, top + 96), Color(0.7, 0.05, 0.05, 0.85), 4.0)
-		_text(Vector2(x + 10, top + 76), "Studies", 6, Color(0.12, 0.16, 0.22))
-		_text(Vector2(x + 10, top + 86), "Comp Sc BSc", 6, Color(0.04, 0.05, 0.07))
-		_text(Vector2(x + 10, top + 96), "xx-xxx-xxx VSETH", 6, Color(0.04, 0.05, 0.07))
-		_text(Vector2(x + 91, top + 96), "S", 27, Color(0.02, 0.025, 0.035))
-		_text(Vector2(x + 111, top + 86), card_date, 6, Color(0.04, 0.05, 0.07))
+		_text(Vector2(x + 10, top + 76), "ARCANE FIELD UNIT", 6, Color(0.12, 0.16, 0.22))
+		_text(Vector2(x + 10, top + 87), "ROSTER 0%d  //  %s" % [i + 1, "ACTIVE" if alive else "OFFLINE"], 6, Color(0.04, 0.05, 0.07))
+		_text(Vector2(x + 10, top + 97), card_date, 6, Color(0.04, 0.05, 0.07))
+		_text(Vector2(x + 91, top + 97), "CA", 18, Color(0.02, 0.025, 0.035))
 		if alert_strength > 0.0:
 			var alert_fill := alert_color
 			alert_fill.a = 0.38 * alert_pulse
@@ -308,19 +366,21 @@ func _draw() -> void:
 		var cd: float = game.cooldowns[a] if a < game.cooldowns.size() else 0.0
 		var ready_casters: int = game.ready_ability_casters(a)
 		var is_ready := cd <= 0.0 and ready_casters > 0
-		draw_rect(r, Color(0.15, 0.2, 0.17) if is_ready else Color(0.19, 0.19, 0.21))
+		draw_rect(r, Color(0.025, 0.15, 0.18) if is_ready else Color(0.055, 0.055, 0.09))
+		draw_rect(r, Color(0.36, 0.90, 1.0, 0.78) if is_ready else Color(0.30, 0.28, 0.48, 0.72), false, 1.5)
 		if not is_ready:
 			var frac := clampf(cd / float(def["cooldown"]), 0.0, 1.0)
 			draw_rect(Rect2(x, top + 7, 76 * frac, 94), Color(0, 0, 0, 0.45))
 			draw_rect(Rect2(x + 3, top + 96, 70 * (1.0 - frac), 3), Color(0.34, 0.78, 1.0, 0.9))
 		var flash: float = game.ability_flash[a]
 		if flash > 0.0:
-			draw_rect(r, Color(0.5, 1.0, 0.7, flash), false, 3.0)
+			draw_rect(r, Color(0.5, 1.0, 0.7, minf(flash, 0.35) if game.reduced_flashes else flash), false, 3.0)
 		var ready_flash: float = game.ability_ready_flash[a] if a < game.ability_ready_flash.size() else 0.0
 		if ready_flash > 0.0:
-			var pulse := 0.55 + 0.45 * sin(game.time * 18.0)
+			var pulse := 0.8 if game.reduced_flashes else 0.55 + 0.45 * sin(game.time * 18.0)
 			draw_rect(r.grow(2.0), Color(0.55, 1.0, 0.76, ready_flash * pulse), false, 4.0)
-		draw_rect(Rect2(x + 8, top + 16, 24, 24), Color(0.3, 0.3, 0.35))
+		draw_rect(Rect2(x + 8, top + 16, 24, 24), Color(0.20, 0.12, 0.40) if is_ready else Color(0.16, 0.16, 0.22))
+		draw_rect(Rect2(x + 8, top + 16, 24, 24), Color(0.68, 0.50, 1.0, 0.9), false, 1.0)
 		_text(Vector2(x + 14, top + 34), Cfg.ABILITY_SLOT_KEYS[ability_slot], 15)
 		var ability_font_size := 10 if String(def["name"]).length() > 8 else 14
 		_text(Vector2(x + 8, top + 58), def["name"], ability_font_size, Color.WHITE if is_ready else Color(0.6, 0.6, 0.6))
@@ -340,7 +400,7 @@ func _draw() -> void:
 	var vx := 1004.0
 	var box_r := Rect2(vx, top + 7, vw - vx - 8.0, 50)
 	var listening: bool = voice.enabled and voice.status == "listening"
-	draw_rect(box_r, Color(0.13, 0.15, 0.19))
+	draw_rect(box_r, Color(0.018, 0.038, 0.072))
 	draw_rect(box_r, Color(0.3, 1.0, 0.6, 0.7) if listening else Color(0.24, 0.28, 0.32), false, 1.0)
 	_draw_mic_icon(Vector2(vx + 14, top + 21), _mic_color())
 	_text(Vector2(vx + 26, top + 26), _fit(_mic_status_text(), 12, 160), 12, _mic_color())
@@ -356,17 +416,19 @@ func _draw() -> void:
 
 	_draw_voice_panel(vw, top)
 
-	# ---- Top info ---------------------------------------------------------
+	# ---- Match ribbon -----------------------------------------------------
 	var n0: String = game.names[0] if game.names.size() > 0 else ""
 	var n1: String = game.names[1] if game.names.size() > 1 else ""
 	var me: String = n0 if game.slot == 0 else n1
 	var them: String = n1 if game.slot == 0 else n0
-	draw_rect(Rect2(0, 0, vw, 22), Color(0, 0, 0, 0.45))
-	_text(Vector2(8, 16), "%s (you)" % me, 14, my_col)
+	draw_rect(Rect2(0, 0, vw, 30), Color(0.004, 0.010, 0.028, 0.92))
+	draw_line(Vector2(0, 29), Vector2(vw, 29), Color(0.34, 0.80, 1.0, 0.42), 1.0)
+	_text(Vector2(12, 20), "%s  //  YOU" % me.to_upper(), 13, my_col)
 	var them_str: String = them if them != "" else "waiting for opponent..."
-	var tw := font.get_string_size(them_str, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
-	_text(Vector2(vw - tw - 8, 16), them_str, 14, en_col)
-	_text_center(vw * 0.5, 16, "Voice: \"Alpha forward\" · \"Alpha left 30\" · \"Bravo go left\" · \"Fireball right\" · \"Stop\"  |  Keys: LMB/RMB · 1-4 · W E R · V mic", 11, Color(0.8, 0.82, 0.85), false)
+	var them_label := them_str.to_upper()
+	var tw := font.get_string_size(them_label, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+	_text(Vector2(vw - tw - 12, 20), them_label, 13, en_col)
+	_text_center(vw * 0.5, 20, "LIVE DUEL    •    ESC  MENU    •    V  VOICE", 11, Color(0.72, 0.78, 0.90), false)
 
 	# Banners
 	var by := 52.0
@@ -381,8 +443,8 @@ func _draw() -> void:
 	var center_y := top * 0.5
 	match game.state:
 		Cfg.State.WAITING:
-			_text_center(vw * 0.5, center_y, "Waiting for an opponent to join...", 30, Color(1, 1, 1, 0.9))
-			_text_center(vw * 0.5, center_y + 34, "Open this page in a second browser tab/window to test locally.", 16, Color(0.8, 0.8, 0.8))
+			_text_center(vw * 0.5, center_y, "WAITING FOR A RIVAL", 30, Color(0.86, 0.96, 1.0, 0.95))
+			_text_center(vw * 0.5, center_y + 34, "Share your server address, or open another client for local testing.", 15, Color(0.62, 0.72, 0.84))
 		Cfg.State.DEPLOYMENT:
 			var elapsed: float = Cfg.DEPLOYMENT_DURATION - float(game.deployment)
 			var phase: String = "OPENING ENTRANCES"

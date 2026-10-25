@@ -29,7 +29,7 @@ func _process(_dt: float) -> void:
 
 
 func _team_color(team: int) -> Color:
-	return Cfg.TEAM_COLORS[team]
+	return game.team_color(team) if game != null else Cfg.TEAM_COLORS[team]
 
 
 func clear_performance_caches() -> void:
@@ -82,10 +82,13 @@ func _draw() -> void:
 			var tgt: Vector2 = o["target"]
 			if tgt.distance_to(o["disp"]) > 4.0:
 				_draw_dashed(o["disp"], tgt, Color(1, 1, 1, 0.45))
-				draw_arc(tgt, 6.0, 0.0, TAU, 16, Color(1, 1, 1, 0.7), 2.0)
+				_draw_order_target(tgt, Color(1.0, 0.83, 0.28, 0.92), true)
 			if o["watch"] != INF:
-				var wp: Vector2 = o["disp"] + Vector2.from_angle(o["watch"]) * 46.0
-				draw_line(o["disp"] + Vector2.from_angle(o["watch"]) * 30.0, wp, Color(1, 1, 0.6, 0.8), 2.0)
+				var watch_dir := Vector2.from_angle(o["watch"])
+				var wp: Vector2 = o["disp"] + watch_dir * 52.0
+				draw_line(o["disp"] + watch_dir * 27.0, wp, Color(1, 1, 0.6, 0.85), 2.0)
+				draw_line(o["disp"] + watch_dir.rotated(-0.16) * 30.0, wp, Color(1, 1, 0.6, 0.34), 1.2)
+				draw_line(o["disp"] + watch_dir.rotated(0.16) * 30.0, wp, Color(1, 1, 0.6, 0.34), 1.2)
 				draw_circle(wp, 3.0, Color(1, 1, 0.6, 0.8))
 			_draw_ability_range_preview(o)
 
@@ -93,9 +96,7 @@ func _draw() -> void:
 	for o in game.own:
 		if o["alive"] and o["idx"] != game.selected and o["target"].distance_to(o["disp"]) > 4.0:
 			_draw_dashed(o["disp"], o["target"], Color(1, 1, 1, 0.18))
-			draw_arc(o["target"], 4.0, 0.0, TAU, 12, Color(1, 1, 1, 0.35), 1.5)
-
-	_draw_voice_pings()
+			_draw_order_target(o["target"], Color(_team_color(my_team), 0.48), false)
 
 	# Last-known enemy positions (ghosts)
 	for g in game.ghosts:
@@ -146,7 +147,8 @@ func _draw() -> void:
 		var head_progress := minf(1.0, progress * 1.35)
 		var tail_progress := maxf(0.0, head_progress - 0.20)
 		var direction: Vector2 = (tr["b"] - tr["a"]).normalized()
-		var side := direction.orthogonal() * sin(game.time * 58.0 + tr["seed"]) * 1.8
+		var side_amount := 0.0 if game.reduced_flashes else sin(game.time * 58.0 + tr["seed"]) * 1.8
+		var side := direction.orthogonal() * side_amount
 		var head: Vector2 = tr["a"].lerp(tr["b"], head_progress) + side
 		var tail: Vector2 = tr["a"].lerp(tr["b"], tail_progress) - side * 0.35
 		var fade := clampf(tr["t"] / 0.10, 0.0, 1.0)
@@ -201,7 +203,7 @@ func _draw_deployment_wake(p: Vector2, facing: float, team: int, idx: int) -> vo
 	var since_entry: float = elapsed - delay
 	var col: Color = _team_color(team)
 	if since_entry < 0.0:
-		var waiting_pulse: float = 0.5 + 0.5 * sin(float(game.time) * 9.0 + idx)
+		var waiting_pulse: float = 0.55 if game.reduced_flashes else 0.5 + 0.5 * sin(float(game.time) * 9.0 + idx)
 		draw_arc(p, Cfg.SOLDIER_RADIUS + 5.0 + waiting_pulse * 2.0, 0.0, TAU, 24, Color(col, 0.18 + waiting_pulse * 0.18), 1.5)
 		return
 	var burst: float = clampf(1.0 - since_entry / 0.85, 0.0, 1.0)
@@ -214,17 +216,34 @@ func _draw_deployment_wake(p: Vector2, facing: float, team: int, idx: int) -> vo
 			draw_line(p + side + trail * 8.0, p + side + trail * (22.0 + 15.0 * burst), Color(col, 0.32 * burst), 2.0)
 
 
+func _draw_order_target(p: Vector2, col: Color, selected_order: bool) -> void:
+	var radius := 7.0 if selected_order else 4.5
+	draw_circle(p, radius + 3.0, Color(0.01, 0.02, 0.03, 0.34))
+	draw_arc(p, radius, 0.0, TAU, 20, col, 2.0 if selected_order else 1.3)
+	for direction in [Vector2.UP, Vector2.RIGHT, Vector2.DOWN, Vector2.LEFT]:
+		draw_line(p + direction * (radius - 2.0), p + direction * (radius + 4.0), col, 1.5)
+
+
 func _draw_soldier(p: Vector2, facing: float, team: int, idx: int, hp: int, flags: int, is_sel: bool, show_ui := true) -> void:
 	var col := _team_color(team)
 	var weapon: int = Cfg.SQUAD_WEAPONS[idx]
 	var r := Cfg.SOLDIER_RADIUS
 	var feedback: Dictionary = game.damage_feedback_for(team, idx)
 	var hit_flash: float = clampf(float(feedback.get("flash", 0.0)) / 0.22, 0.0, 1.0)
+	var sprite_hit_flash := 0.0 if game.reduced_flashes else hit_flash
 
 	# Selection highlight ring (pulsing)
 	if show_ui and is_sel:
-		var pulse := 0.5 + 0.5 * sin(game.time * 6.0)
-		draw_arc(p, r + 7.0 + pulse * 2.5, 0.0, TAU, 32, Color(1, 1, 1, 0.9), 2.5)
+		var pulse := 0.5 if game.reduced_flashes else 0.5 + 0.5 * sin(game.time * 6.0)
+		var select_radius := r + 8.0 + pulse * 1.5
+		var select_col := Color(1.0, 0.83, 0.28, 0.95)
+		for quadrant in 4:
+			var centre_angle := quadrant * PI * 0.5 + PI * 0.25
+			draw_arc(p, select_radius, centre_angle - 0.28, centre_angle + 0.28, 8, select_col, 3.0)
+		var facing_dir := Vector2.from_angle(facing)
+		var arrow_tip := p + facing_dir * (select_radius + 6.0)
+		var arrow_side := facing_dir.orthogonal() * 4.0
+		draw_colored_polygon(PackedVector2Array([arrow_tip, p + facing_dir * select_radius + arrow_side, p + facing_dir * select_radius - arrow_side]), select_col)
 
 	# Rush speed lines behind unit
 	if show_ui and flags & 4 != 0:  # rush
@@ -240,8 +259,10 @@ func _draw_soldier(p: Vector2, facing: float, team: int, idx: int, hp: int, flag
 
 	# Team identification is hidden during the clean entrance cinematic.
 	if show_ui:
+		if game.high_contrast_markers:
+			draw_arc(p, r + 4.0, 0.0, TAU, 32, Color(0.0, 0.0, 0.0, 0.92), 5.0)
 		draw_circle(p, r + 2.0, Color(col.r, col.g, col.b, 0.35))
-		draw_arc(p, r + 2.5, 0.0, TAU, 32, col, 2.0)
+		draw_arc(p, r + 2.5, 0.0, TAU, 32, col, 3.0 if game.high_contrast_markers else 2.0)
 
 	if not soldier_textures.is_empty():
 		# Each squad slot has a matching modern-student portrait and overhead sprite.
@@ -250,8 +271,8 @@ func _draw_soldier(p: Vector2, facing: float, team: int, idx: int, hp: int, flag
 			sprite_mod.a = 0.34
 		elif flags & 32 != 0:
 			sprite_mod = sprite_mod.lerp(Color(1.0, 0.62, 0.18), 0.34)
-		if hit_flash > 0.0:
-			sprite_mod = sprite_mod.lerp(Color(1.0, 0.22, 0.12), 0.65 + hit_flash * 0.35)
+		if sprite_hit_flash > 0.0:
+			sprite_mod = sprite_mod.lerp(Color(1.0, 0.22, 0.12), 0.65 + sprite_hit_flash * 0.35)
 		draw_set_transform(p, facing, Vector2.ONE)
 		draw_texture_rect(soldier_textures[idx % soldier_textures.size()], Rect2(-24, -18, 48, 36), false, sprite_mod)
 		draw_set_transform_matrix(Transform2D.IDENTITY)
@@ -287,7 +308,7 @@ func _draw_soldier(p: Vector2, facing: float, team: int, idx: int, hp: int, flag
 			_draw_label(p + Vector2(0, -30.0 - (1.0 - hit_flash) * 5.0), "-%d" % int(feedback.get("damage", 0)), Color(1.0, 0.42, 0.28, hit_flash), 11)
 
 		if flags & 2 != 0:  # outrage
-			var rage_pulse := 0.55 + 0.35 * sin(game.time * 20.0)
+			var rage_pulse := 0.72 if game.reduced_flashes else 0.55 + 0.35 * sin(game.time * 20.0)
 			draw_arc(p, r + 7.0, 0.0, TAU, 24, Color(1.0, 0.28, 0.04, rage_pulse), 3.0)
 		if flags & 32 != 0:  # stick stance
 			draw_arc(p, r + 6.0, -1.2, 1.2, 18, Color(1.0, 0.68, 0.18, 0.8), 2.0)

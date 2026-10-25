@@ -67,6 +67,8 @@ var countdown := 0.0
 var winner := -1
 var time := 0.0
 var rng := RandomNumberGenerator.new()
+var hello_deadlines := {}     # peer id -> server time by which hello must arrive
+var snapshot_accumulator := 0.0
 
 
 func start(port: int, cert := "", key := "") -> void:
@@ -105,8 +107,9 @@ func _on_peer_connected(id: int) -> void:
 		return
 	peers[slot] = id
 	names[slot] = "Player %d" % (slot + 1)
+	hello_deadlines[id] = time + Cfg.SERVER_HELLO_TIMEOUT
 	print("[server] peer %d joined as slot %d" % [id, slot])
-	Net.s_welcome.rpc_id(id, slot)
+	Net.s_welcome.rpc_id(id, slot, Cfg.PROTOCOL_VERSION)
 	if state == Cfg.State.WAITING:
 		_begin_loadout()
 
@@ -117,6 +120,7 @@ func _on_peer_disconnected(id: int) -> void:
 		return
 	print("[server] slot %d (peer %d) left" % [slot, id])
 	peers[slot] = 0
+	hello_deadlines.erase(id)
 	names[slot] = ""
 	state = Cfg.State.WAITING
 	loadout_ready = [false, false]
@@ -126,10 +130,16 @@ func _on_peer_disconnected(id: int) -> void:
 		events[other].append(["msg", "Opponent left. Waiting for a new opponent..."])
 
 
-func on_hello(id: int, player_name: String) -> void:
+func on_hello(id: int, player_name: String, protocol_version: int) -> void:
 	var slot := _slot_of(id)
 	if slot == -1:
 		return
+	if protocol_version != Cfg.PROTOCOL_VERSION:
+		print("[server] peer %d rejected: protocol %d (server %d)" % [id, protocol_version, Cfg.PROTOCOL_VERSION])
+		Net.s_reject.rpc_id(id, "Game versions do not match. Both PCs must use the same Campus Arcana build.")
+		get_tree().create_timer(0.5).timeout.connect(_kick.bind(id))
+		return
+	hello_deadlines.erase(id)
 	player_name = player_name.strip_edges().left(16)
 	if player_name == "":
 		player_name = "Player %d" % (slot + 1)
@@ -563,6 +573,12 @@ func _physics_process(dt: float) -> void:
 	if Net.server != self:
 		return
 	time += dt
+	for peer_id in hello_deadlines.keys():
+		if time >= float(hello_deadlines[peer_id]):
+			print("[server] peer %d rejected: hello timeout" % peer_id)
+			Net.s_reject.rpc_id(peer_id, "Connection timed out during setup. Please try again.")
+			hello_deadlines.erase(peer_id)
+			get_tree().create_timer(0.5).timeout.connect(_kick.bind(peer_id))
 	match state:
 		Cfg.State.DEPLOYMENT:
 			deployment -= dt
@@ -598,7 +614,10 @@ func _physics_process(dt: float) -> void:
 		Cfg.State.PLAYING:
 			_simulate(dt)
 	_compute_visibility()
-	_broadcast()
+	snapshot_accumulator += dt
+	if snapshot_accumulator >= 1.0 / Cfg.SNAPSHOT_RATE:
+		snapshot_accumulator = fmod(snapshot_accumulator, 1.0 / Cfg.SNAPSHOT_RATE)
+		_broadcast()
 
 
 func _fog_list() -> Array:

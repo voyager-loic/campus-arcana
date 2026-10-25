@@ -19,6 +19,27 @@ for arg in "$@"; do
   esac
 done
 
+port_in_use() {
+  python3 - "$1" <<'PY'
+import socket, sys
+s = socket.socket()
+try:
+    s.bind(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    raise SystemExit(0)
+finally:
+    s.close()
+raise SystemExit(1)
+PY
+}
+
+for port in 9080 8080; do
+  if port_in_use "$port"; then
+    echo "Port $port is already in use. Stop the existing service and try again." >&2
+    exit 1
+  fi
+done
+
 if [[ "$NO_EXPORT" != true || ! -f build/web/index.html ]]; then
   ./export_web.sh
 fi
@@ -36,7 +57,25 @@ trap cleanup EXIT INT TERM
 SERVER_PID=$!
 python3 tools/serve_web.py 8080 build/web &
 WEB_PID=$!
-sleep 1.5
+
+wait_for_service() {
+  local pid="$1" port="$2" label="$3"
+  for _attempt in {1..80}; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "$label stopped before it was ready." >&2
+      return 1
+    fi
+    if port_in_use "$port"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "$label did not become ready on port $port." >&2
+  return 1
+}
+
+wait_for_service "$SERVER_PID" 9080 "Game server"
+wait_for_service "$WEB_PID" 8080 "Web server"
 
 URL="http://localhost:8080/"
 echo ""
@@ -53,4 +92,10 @@ if command -v open >/dev/null 2>&1; then
 elif command -v xdg-open >/dev/null 2>&1; then
   xdg-open "${URL}?name=Blue"; sleep 1; xdg-open "${URL}?name=Red"
 fi
-wait
+
+# Keep the launcher alive and report if either service unexpectedly exits.
+while kill -0 "$SERVER_PID" 2>/dev/null && kill -0 "$WEB_PID" 2>/dev/null; do
+  sleep 1
+done
+echo "A local service stopped unexpectedly; shutting down the other service." >&2
+exit 1
