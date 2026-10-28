@@ -41,24 +41,43 @@
 ## ⚡ Quick Start: Run the Game in 10 Seconds
 
 ### The One-Command Run (Mac & Linux)
+
 From the repository root, run:
 
 ```bash
 ./run_local.sh
 ```
 
-**What this does automatically:**
-1. Exports the web build into `build/web/` (if not already built).
-2. Starts the authoritative Godot server on `ws://localhost:9080`.
-3. Starts a local lightweight web server on `http://localhost:8080`.
-4. Opens **two browser tabs** (one for Blue squad, one for Red squad).
-5. In each tab, click **Deploy** (or press Enter) to connect and start the match!
+This starts a private test server and opens **two desktop game windows**, already
+connected to the same lobby by invite code. There are no addresses to enter and
+no web export is needed.
 
-> **Tip**: Skip rebuilding the web export on subsequent runs by passing `--no-export`:
-> ```bash
-> ./run_local.sh --no-export
-> ```
-> To stop both servers, simply press `Ctrl + C` in the terminal.
+1. Choose a map in Player One's lobby (or use the map option below).
+2. Press **Ready Up** in both windows.
+3. Player One presses **Continue to Spells**.
+4. Confirm both squads to deploy.
+
+Start with the larger ETH HG arena:
+
+```bash
+./run_local.sh --map hg_e
+```
+
+Closing either desktop player ends the local test. **Ctrl+C** also stops both
+clients and the server. Launchers choose free ports automatically and print
+the lobby code and a unique log directory for each run.
+
+### Browser Testing
+
+```bash
+./run_local.sh --web
+```
+
+This exports the web client, starts the game and web servers, then opens two
+browser players with invite codes filled and submitted automatically. Move
+them into separate visible windows, ready up, and continue to spell selection.
+Browser players cannot create a desktop server, so the launcher provides one.
+Use `--web --no-export` to reuse a current web build. Stop with **Ctrl+C**.
 
 ### Playing from Another PC on the Same Network
 
@@ -68,19 +87,30 @@ Run the LAN-compatible web build on the host:
 ./run_local.sh --lan
 ```
 
-On the other PC, open `http://<host-ip>:8080/`, then use
-`ws://<host-ip>:9080` in the Server field. Plain LAN HTTP cannot provide the
-secure browser APIs used by Godot audio and microphone input, so this mode is
-intentionally silent and uses keyboard/mouse controls. Use the HTTPS setup
-below when browser sound or voice commands are required.
+The launcher opens **one** local browser player and prints an invite URL for
+the other PC. Send that URL to your friend; opening it connects them to the
+same lobby. Both computers must be on the same network and the host's firewall
+must allow the displayed ports. No Server field needs to be opened.
+
+Plain LAN HTTP mode is intentionally silent and uses keyboard/mouse controls.
+Use the HTTPS setup below when browser sound or voice commands are required.
 
 ### Hosting from the Desktop Build
 
-The native desktop lobby also has a **Host Game** button. It starts the
-authoritative server on port `9080`, connects the host automatically, and stops
-the server when the host leaves or closes the game. The second player joins by
-entering `ws://<host-address>:9080` and pressing **Deploy**. Hosting from a web
-browser is not available because browsers cannot launch a local server process.
+When launching the game normally from Godot or a desktop build, press
+**Create Lobby**, then share **Copy Code** with a friend. They paste it into
+**Join Lobby**. Addresses are available under **Advanced connection options**.
+The host's desktop game starts and stops its own server.
+
+For a dedicated lobby without opening any players:
+
+```bash
+./run_server.sh 9080 --map hg_e
+```
+
+Each server process hosts one two-player lobby. Codes encode an IPv4 address
+and port; internet play still needs a reachable host. HTTPS browser pages
+require a secure `wss://` endpoint through Advanced connection options.
 
 ### Playing Without Installing Godot
 If you don't have Godot installed on your machine:
@@ -188,7 +218,19 @@ Want to verify your changes without opening browsers? Run our headless automated
 ```bash
 tools/bot_match.sh 30
 ```
-This launches a headless game server, spawns two automated bot clients that engage in combat, cast abilities, and test server rule validation, then prints the match statistics.
+This checks two bots joining, readying, starting squad setup, confirming spells,
+and reaching combat. It also checks that a third player is rejected. Failures
+produce a nonzero exit status and show the relevant logs.
+
+```bash
+tools/bot_match.sh 20 hg_e
+tools/visual_test.sh /tmp/campus-shots 12 hg_e
+```
+
+The visual test automatically completes the lobby and loadout steps, then
+captures both players in the match. Its arguments are output directory,
+screenshot delay (at least 10 seconds), and map ID. Map IDs are `dining_hall`
+and `hg_e`. Test processes are cleaned up on completion or interruption.
 
 ---
 

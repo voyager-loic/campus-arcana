@@ -25,6 +25,13 @@ func _draw() -> void:
 	var panel := 3.0 * t
 	var open := door_open_amount()
 	var slide := panel * open
+	if map.map_id == "hg_e":
+		for team in 2:
+			var y := (114.0 if team == 0 else 23.0) * t
+			_draw_threshold(Rect2(81 * t, y - 5, 6 * t, 18), Cfg.TEAM_COLORS[team], true, open)
+			_draw_door_panel(Rect2(81 * t - slide, y, panel, 8), Cfg.TEAM_COLORS[team], true)
+			_draw_door_panel(Rect2(84 * t + slide, y, panel, 8), Cfg.TEAM_COLORS[team], true)
+		return
 	var blue_y: float = map.MAIN_BOTTOM * t
 	_draw_threshold(Rect2(2 * t, blue_y - 5, 6 * t, 18), Cfg.TEAM_COLORS[0], true, open)
 	_draw_door_panel(Rect2(2 * t - slide, blue_y, panel, 8), Cfg.TEAM_COLORS[0], true)

@@ -8,6 +8,7 @@ const Cfg = preload("res://scripts/config.gd")
 var effects_enabled := true
 var quality := 2
 var reduced_flashes := false
+var map
 var _phase := 0.0
 var _redraw_accumulator := 0.0
 
@@ -64,10 +65,22 @@ func _draw() -> void:
 	var tile := float(Cfg.TILE)
 	var pulse_strength := 0.10 if reduced_flashes else 0.20
 	var pulse := 0.82 + sin(_phase * 1.7) * pulse_strength
+	var strips := STRIPS
+	var runes := RUNES
+	if map != null and map.map_id == "hg_e":
+		strips = [
+			[Vector2(81, 114), Vector2(87, 114), CYAN],
+			[Vector2(81, 23), Vector2(87, 23), MAGENTA],
+			[Vector2(77.5, 56), Vector2(77.5, 66), VIOLET],
+			[Vector2(93.5, 76), Vector2(93.5, 86), CYAN],
+			[Vector2(34, 100), Vector2(48, 100), VIOLET],
+			[Vector2(116, 44), Vector2(130, 44), MAGENTA],
+		]
+		runes = [[Vector2(84, 60), CYAN], [Vector2(84, 85), VIOLET], [Vector2(57, 66), MAGENTA], [Vector2(111, 94), CYAN], [Vector2(84, 35), VIOLET]]
 
 	# Thin architectural strips give the entrances and service room a readable
 	# identity without changing collision or obscuring the floor plan.
-	for strip in STRIPS:
+	for strip in strips:
 		var a: Vector2 = strip[0] * tile
 		var b: Vector2 = strip[1] * tile
 		var color: Color = strip[2]
@@ -79,10 +92,10 @@ func _draw() -> void:
 
 	# Broken warding circles mark useful navigation landmarks. Their restrained
 	# alpha keeps them legible under fog without competing with units.
-	var rune_count: int = [2, 4, RUNES.size()][quality]
+	var rune_count: int = [2, 4, runes.size()][quality]
 	for i in rune_count:
-		var center: Vector2 = RUNES[i][0] * tile
-		var color: Color = RUNES[i][1]
+		var center: Vector2 = runes[i][0] * tile
+		var color: Color = runes[i][1]
 		_draw_rune(center, 15.0 + float(i % 2) * 4.0, color, pulse, i)
 
 	# A handful of deterministic motes supplies motion without particle nodes.
@@ -93,6 +106,10 @@ func _draw() -> void:
 			(5.0 + fmod(float(i * 13), 60.0)) * tile
 		)
 		var orbit: Vector2 = Vector2(cos(_phase * (0.38 + i * 0.01) + i), sin(_phase * 0.31 + i * 1.7)) * (5.0 + i % 4)
+		if map != null and map.map_id == "hg_e":
+			base = Vector2(57.0 + (i * 7) % 54, 45.0 + (i * 11) % 55) * tile
+			if map.is_wall_at(base + orbit):
+				continue
 		var color := CYAN if i % 3 == 0 else (VIOLET if i % 3 == 1 else MAGENTA)
 		var mote_alpha := 0.24 if reduced_flashes else 0.36
 		draw_circle(base + orbit, 4.5, Color(color, mote_alpha * pulse))

@@ -6,13 +6,22 @@ extends RefCounted
 ## drift apart.
 
 const Cfg = preload("res://scripts/config.gd")
+const HgLayout = preload("res://scripts/hg_e_layout.gd")
+const MAP_IDS := ["dining_hall", "hg_e"]
+const MAP_NAMES := ["Ruined Dining Hall", "ETH HG · Floor E"]
 
 const T := Cfg.TILE
-const W := Cfg.MAP_W
-const H := Cfg.MAP_H
+var W := Cfg.MAP_W
+var H := Cfg.MAP_H
+var world_size := Cfg.WORLD_SIZE
+var map_id := "dining_hall"
+var regions: Array[Dictionary] = []
+var stairs: Array[Rect2i] = []
+var closed_rooms: Array[Dictionary] = []
+var lecture_seats: Array[Dictionary] = []
 const MAIN_H := 44
 const MAIN_BOTTOM := MAIN_H - 1
-const MATCH_SIZE := Vector2(W * T, MAIN_H * T)
+const MATCH_SIZE := Vector2(Cfg.MAP_W * T, MAIN_H * T)
 const ROOM_LEFT := 27
 const ROOM_RIGHT := 78
 const ROOM_BREACH_LEFT := 72
@@ -36,10 +45,18 @@ var doors_closed := false
 var breakable_revision := 0
 
 
-func _init() -> void:
+func _init(selected_map := "dining_hall") -> void:
+	map_id = selected_map if selected_map in MAP_IDS else "dining_hall"
+	if map_id == "hg_e":
+		W = 172
+		H = 124
+	world_size = Vector2(W * T, H * T)
 	grid.resize(W * H)
 	grid.fill(0)
-	_build_layout()
+	if map_id == "hg_e":
+		HgLayout.build(self)
+	else:
+		_build_layout()
 	astar.region = Rect2i(0, 0, W, H)
 	astar.cell_size = Vector2(T, T)
 	astar.offset = Vector2(T * 0.5, T * 0.5)
@@ -456,6 +473,9 @@ func _build_layout() -> void:
 
 
 func tile_zone(x: int, y: int) -> int:
+	for stair in stairs:
+		if stair.has_point(Vector2i(x, y)):
+			return Zone.STAIR
 	return Zone.HALL
 
 
@@ -490,11 +510,18 @@ func is_wall_tile(x: int, y: int) -> bool:
 
 
 func is_door_tile(x: int, y: int) -> bool:
+	if map_id == "hg_e":
+		return (y == 114 or y == 23) and x >= 81 and x < 87
 	return (y == MAIN_BOTTOM and x >= 2 and x < 8) or (x == W - 1 and y >= 2 and y < 8)
 
 
 func set_doors_closed(closed: bool) -> void:
 	doors_closed = closed
+	if map_id == "hg_e":
+		for y in [23, 114]:
+			for x in range(81, 87):
+				astar.set_point_solid(Vector2i(x, y), closed)
+		return
 	for x in range(2, 8):
 		astar.set_point_solid(Vector2i(x, MAIN_BOTTOM), closed)
 	for y in range(2, 8):
@@ -506,6 +533,8 @@ func is_wall_at(p: Vector2) -> bool:
 
 
 func spawn_position(team: int, idx: int) -> Vector2:
+	if map_id == "hg_e":
+		return Vector2(80.5 + (idx % 2) * 6.0, (109.5 - (idx / 2) * 4.0) if team == 0 else (28.5 + (idx / 2) * 4.0)) * T
 	var blue := [Vector2(4.0, 40.0), Vector2(6.0, 40.0), Vector2(4.0, 36.0), Vector2(7.0, 36.0)]
 	var red := [Vector2(74.0, 4.0), Vector2(70.0, 4.0), Vector2(73.5, 12.0), Vector2(70.0, 13.0)]
 	return (blue[idx] if team == 0 else red[idx]) * float(T)
@@ -514,12 +543,16 @@ func spawn_position(team: int, idx: int) -> Vector2:
 func entry_position(team: int, idx: int) -> Vector2:
 	# Units wait immediately behind their open threshold, then fan into the hall.
 	var offset := (idx - (Cfg.SQUAD_SIZE - 1) * 0.5) * 5.0
+	if map_id == "hg_e":
+		return Vector2(84.0 * T + offset, (114.5 if team == 0 else 23.5) * T)
 	if team == 0:
 		return Vector2(4.5 * T + offset, (MAIN_H - 0.65) * T)
 	return Vector2((W - 0.65) * T, 4.5 * T + offset)
 
 
 func spawn_facing(team: int) -> float:
+	if map_id == "hg_e":
+		return -PI * 0.5 if team == 0 else PI * 0.5
 	return -PI * 0.5 if team == 0 else PI
 
 
@@ -668,8 +701,8 @@ func resolve_circle(p: Vector2, r: float) -> Vector2:
 					moved = true
 		if not moved:
 			break
-	p.x = clampf(p.x, r, Cfg.WORLD_SIZE.x - r)
-	p.y = clampf(p.y, r, Cfg.WORLD_SIZE.y - r)
+	p.x = clampf(p.x, r, world_size.x - r)
+	p.y = clampf(p.y, r, world_size.y - r)
 	return p
 
 
@@ -697,7 +730,7 @@ func _nearest_open_tile(t: Vector2i) -> Vector2i:
 ## Checking the full circle prevents final waypoints from hugging furniture or
 ## being pushed to a surprising side of a wall by collision resolution.
 func _point_is_clear(p: Vector2, r: float) -> bool:
-	if p.x < r or p.y < r or p.x > Cfg.WORLD_SIZE.x - r or p.y > Cfg.WORLD_SIZE.y - r:
+	if p.x < r or p.y < r or p.x > world_size.x - r or p.y > world_size.y - r:
 		return false
 	var x0 := floori((p.x - r) / T)
 	var x1 := floori((p.x + r) / T)
@@ -760,8 +793,8 @@ func _nearest_reachable_tile(from_tile: Vector2i, target: Vector2i, max_radius :
 ## Public so the client can keep queued voice destinations in sync with the
 ## authoritative server without exposing the route itself.
 func navigation_destination(from: Vector2, to: Vector2, r := Cfg.SOLDIER_RADIUS) -> Vector2:
-	to.x = clampf(to.x, r, Cfg.WORLD_SIZE.x - r)
-	to.y = clampf(to.y, r, Cfg.WORLD_SIZE.y - r)
+	to.x = clampf(to.x, r, world_size.x - r)
+	to.y = clampf(to.y, r, world_size.y - r)
 	var from_tile := _nearest_open_tile(Vector2i(floori(from.x / T), floori(from.y / T)))
 	var target_tile := Vector2i(floori(to.x / T), floori(to.y / T))
 	if not is_wall_tile(target_tile.x, target_tile.y):

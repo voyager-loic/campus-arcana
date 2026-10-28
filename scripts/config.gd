@@ -7,7 +7,7 @@ const MAX_PLAYERS := 2
 const SQUAD_SIZE := 4
 ## Increment whenever the multiplayer RPC or snapshot format becomes
 ## incompatible. Mismatched builds are rejected with an actionable message.
-const PROTOCOL_VERSION := 1
+const PROTOCOL_VERSION := 3
 const CONNECTION_TIMEOUT := 8.0
 const SNAPSHOT_TIMEOUT := 6.0
 const SERVER_HELLO_TIMEOUT := 8.0
@@ -177,7 +177,7 @@ const DEPLOYMENT_DOOR_OPEN_TIME := 0.65
 const DEPLOYMENT_UNIT_STAGGER := 0.12
 const DEPLOYMENT_DOOR_CLOSE_TIME := 0.55
 
-enum State { WAITING, LOADOUT, DEPLOYMENT, COUNTDOWN, PLAYING, ENDED }
+enum State { WAITING, LOADOUT, DEPLOYMENT, COUNTDOWN, PLAYING, ENDED, LOBBY }
 
 const TEAM_COLORS := [Color(0.30, 0.65, 1.0), Color(1.0, 0.38, 0.32)]
 const TEAM_NAMES := ["Blue", "Red"]

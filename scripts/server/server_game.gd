@@ -61,6 +61,7 @@ var vis_table := [[false, false, false, false], [false, false, false, false]]  #
 var rematch_votes := [false, false]
 var loadouts := [Cfg.DEFAULT_LOADOUTS.duplicate(), Cfg.DEFAULT_LOADOUTS.duplicate()]
 var loadout_ready := [false, false]
+var lobby_ready := [false, false]
 var state := Cfg.State.WAITING
 var deployment := 0.0
 var countdown := 0.0
@@ -110,8 +111,8 @@ func _on_peer_connected(id: int) -> void:
 	hello_deadlines[id] = time + Cfg.SERVER_HELLO_TIMEOUT
 	print("[server] peer %d joined as slot %d" % [id, slot])
 	Net.s_welcome.rpc_id(id, slot, Cfg.PROTOCOL_VERSION)
-	if state == Cfg.State.WAITING:
-		_begin_loadout()
+	if state in [Cfg.State.WAITING, Cfg.State.LOBBY]:
+		_enter_lobby()
 
 
 func _on_peer_disconnected(id: int) -> void:
@@ -122,12 +123,15 @@ func _on_peer_disconnected(id: int) -> void:
 	peers[slot] = 0
 	hello_deadlines.erase(id)
 	names[slot] = ""
-	state = Cfg.State.WAITING
+	lobby_ready[slot] = false
 	loadout_ready = [false, false]
 	_reset_squads()
 	var other := 1 - slot
 	if peers[other] != 0:
-		events[other].append(["msg", "Opponent left. Waiting for a new opponent..."])
+		state = Cfg.State.LOBBY
+		events[other].append(["msg", "Opponent left the lobby."])
+	else:
+		state = Cfg.State.WAITING
 
 
 func on_hello(id: int, player_name: String, protocol_version: int) -> void:
@@ -149,6 +153,49 @@ func on_hello(id: int, player_name: String, protocol_version: int) -> void:
 # --------------------------------------------------------------------------
 # Match flow
 # --------------------------------------------------------------------------
+
+func _enter_lobby() -> void:
+	_reset_squads()
+	lobby_ready = [false, false]
+	loadout_ready = [false, false]
+	state = Cfg.State.LOBBY
+	for t in 2:
+		if peers[t] != 0:
+			events[t].append(["msg", "Lobby ready. Confirm when you are prepared."])
+
+
+func on_lobby_ready(id: int, ready: bool) -> void:
+	var slot := _slot_of(id)
+	if slot == -1 or state != Cfg.State.LOBBY:
+		return
+	lobby_ready[slot] = ready
+	events[slot].append(["msg", "You are ready." if ready else "You are no longer ready."])
+	var other := 1 - slot
+	if peers[other] != 0:
+		events[other].append(["msg", "%s is %s." % [names[slot], "ready" if ready else "not ready"]])
+
+
+func on_lobby_start(id: int) -> void:
+	var slot := _slot_of(id)
+	if slot != 0 or state != Cfg.State.LOBBY:
+		return
+	if peers[0] == 0 or peers[1] == 0:
+		events[slot].append(["msg", "A second player must join before starting."])
+		return
+	if not lobby_ready[0] or not lobby_ready[1]:
+		events[slot].append(["msg", "Both players must be ready before starting."])
+		return
+	_begin_loadout()
+
+
+func on_lobby_map(id: int, map_id: String) -> void:
+	if _slot_of(id) != 0 or state != Cfg.State.LOBBY or not map_id in MapData.MAP_IDS or map.map_id == map_id:
+		return
+	map = MapData.new(map_id)
+	lobby_ready = [false, false]
+	_reset_squads()
+	for team in 2:
+		events[team].append(["msg", "Map changed. Ready up again to confirm."])
 
 func _begin_loadout() -> void:
 	_reset_squads()
@@ -230,7 +277,7 @@ func on_rematch(id: int) -> void:
 		return
 	rematch_votes[slot] = true
 	if rematch_votes[0] and rematch_votes[1]:
-		_begin_loadout()
+		_enter_lobby()
 	else:
 		events[1 - slot].append(["msg", "Opponent wants a rematch! Press Enter."])
 
@@ -241,7 +288,7 @@ func on_rematch(id: int) -> void:
 
 func _valid_vec(v: Vector2) -> bool:
 	return is_finite(v.x) and is_finite(v.y) and v.x > -100.0 and v.y > -100.0 \
-		and v.x < Cfg.WORLD_SIZE.x + 100.0 and v.y < Cfg.WORLD_SIZE.y + 100.0
+		and v.x < map.world_size.x + 100.0 and v.y < map.world_size.y + 100.0
 
 
 func _selected_soldier(slot: int) -> Soldier:
@@ -897,6 +944,8 @@ func _broadcast() -> void:
 						scanned.append([e.idx, e.pos])
 						break
 		var snap := {
+			"map": map.map_id,
+			"world": map.world_size,
 			"st": state,
 			"dp": deployment,
 			"ct": countdown,
@@ -914,6 +963,7 @@ func _broadcast() -> void:
 			"names": names.duplicate(),
 			"lo": loadouts[team].duplicate(),
 			"rd": loadout_ready.duplicate(),
+			"lr": lobby_ready.duplicate(),
 			"conn": [peers[0] != 0, peers[1] != 0],
 		}
 		events[team] = []

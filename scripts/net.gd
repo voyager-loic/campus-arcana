@@ -103,6 +103,24 @@ func c_loadout(ability_masks: Array) -> void:
 
 
 @rpc("any_peer", "call_remote", "reliable")
+func c_lobby_ready(ready: bool) -> void:
+	if server:
+		server.on_lobby_ready(multiplayer.get_remote_sender_id(), ready)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func c_lobby_start() -> void:
+	if server:
+		server.on_lobby_start(multiplayer.get_remote_sender_id())
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func c_lobby_map(map_id: String) -> void:
+	if server:
+		server.on_lobby_map(multiplayer.get_remote_sender_id(), map_id)
+
+
+@rpc("any_peer", "call_remote", "reliable")
 func c_select(idx: int) -> void:
 	if server:
 		server.on_select(multiplayer.get_remote_sender_id(), idx)

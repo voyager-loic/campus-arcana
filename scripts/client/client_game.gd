@@ -129,11 +129,26 @@ var hud_layer: CanvasLayer
 var menu_layer: CanvasLayer
 var name_edit: LineEdit
 var url_edit: LineEdit
+var lobby_code_edit: LineEdit
 var connect_btn: Button
+var join_code_btn: Button
 var host_btn: Button
 var status_label: Label
 var mic_btn: Button
 var menu_panorama: TextureRect
+var lobby_layer: CanvasLayer
+var lobby_overlay: ColorRect
+var lobby_player_names: Array[Label] = []
+var lobby_player_roles: Array[Label] = []
+var lobby_player_states: Array[Label] = []
+var lobby_invite_edit: LineEdit
+var lobby_share_code_edit: LineEdit
+var lobby_status: Label
+var lobby_ready_button: Button
+var lobby_start_button: Button
+var lobby_map_select: OptionButton
+var lobby_map_description: Label
+var _updating_lobby_ui := false
 var loadout_layer: CanvasLayer
 var loadout_overlay: ColorRect
 var loadout_buttons := []
@@ -180,6 +195,7 @@ func _ready() -> void:
 	_build_world()
 	_build_hud()
 	_build_menu()
+	_build_lobby()
 	_build_loadout()
 	_build_pause_menu()
 	Net.welcomed.connect(_on_welcome)
@@ -192,6 +208,9 @@ func _ready() -> void:
 		_open_title_settings()
 	if _query_param("host") != "":
 		_on_host_pressed()
+	elif _query_param("join_code") != "":
+		lobby_code_edit.text = _query_param("join_code")
+		_on_join_code_pressed()
 	elif _query_param("auto") != "":
 		_on_connect_pressed()
 	_setup_debug_hooks()
@@ -217,6 +236,22 @@ func _exit_tree() -> void:
 func _setup_debug_hooks() -> void:
 	if OS.has_feature("web"):
 		return
+	var overview := _query_param("overview")
+	if overview in MapData.MAP_IDS:
+		_apply_map(overview)
+		_show_menu(false, "")
+		hud_layer.visible = false
+		vision_mask.reveal_all = true
+		fog_sprite.visible = false
+		vision_mask.queue_redraw()
+		fog_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+		var viewport_size := get_viewport().get_visible_rect().size
+		var fit := minf(viewport_size.x / map.world_size.x, viewport_size.y / map.world_size.y) * 0.94
+		camera.zoom = Vector2(fit, fit)
+		camera.position = map.world_size * 0.5
+		camera.position_smoothing_enabled = false
+		for unit in own:
+			unit["alive"] = false
 	var say := _query_param("say")
 	if say != "":
 		var lines := Array(say.split(";", false))
@@ -232,8 +267,9 @@ func _setup_debug_hooks() -> void:
 		var delay := float(_query_param("shot_delay")) if _query_param("shot_delay") != "" else 8.0
 		get_tree().create_timer(delay).timeout.connect(func():
 			get_viewport().get_texture().get_image().save_png(shot)
-			print("screenshot saved: ", shot)
-			get_tree().quit())
+			print("screenshot saved: ", shot, " state=", state, " map=", map.map_id)
+			if _query_param("keep_after_shot") == "":
+				get_tree().quit())
 	if _query_param("demo") != "":
 		var timer := Timer.new()
 		timer.wait_time = 2.0
@@ -246,7 +282,7 @@ func _setup_debug_hooks() -> void:
 			step[0] += 1
 			var idx: int = step[0] % Cfg.SQUAD_SIZE
 			_select(idx)
-			var target := Cfg.WORLD_SIZE * 0.5 + Vector2(randf_range(-200, 60) * (1 if slot == 0 else -1), randf_range(-200, 200))
+			var target := map.world_size * 0.5 + Vector2(randf_range(-200, 60) * (1 if slot == 0 else -1), randf_range(-200, 200))
 			Net.c_move.rpc_id(1, target, false)
 			if step[0] == 4:
 				_use_ability(Cfg.Ability.FOG, false)
@@ -272,7 +308,7 @@ func _build_world() -> void:
 	world.add_child(world_light)
 
 	map_vp = SubViewport.new()
-	map_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * map_cache_scale), ceil(Cfg.WORLD_SIZE.y * map_cache_scale))
+	map_vp.size = Vector2i(ceil(map.world_size.x * map_cache_scale), ceil(map.world_size.y * map_cache_scale))
 	map_vp.disable_3d = true
 	map_vp.transparent_bg = false
 	map_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
@@ -299,21 +335,22 @@ func _build_world() -> void:
 	door_view.game = self
 	world.add_child(door_view)
 	neon_ambience = NeonAmbience.new()
+	neon_ambience.map = map
 	world.add_child(neon_ambience)
 	neon_ambience.configure(neon_effects_enabled, graphics_quality, reduced_flashes)
 	camera = Camera2D.new()
 	camera.name = "ArenaCamera"
-	camera.position = Cfg.WORLD_SIZE * 0.5
+	camera.position = map.world_size * 0.5
 	camera.position_smoothing_enabled = true
 	camera.position_smoothing_speed = 5.5
 	camera.limit_left = 0
 	camera.limit_top = 0
-	camera.limit_right = int(Cfg.WORLD_SIZE.x)
-	camera.limit_bottom = int(Cfg.WORLD_SIZE.y)
+	camera.limit_right = int(map.world_size.x)
+	camera.limit_bottom = int(map.world_size.y)
 	add_child(camera)
 
 	fog_vp = SubViewport.new()
-	fog_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * fog_mask_scale), ceil(Cfg.WORLD_SIZE.y * fog_mask_scale))
+	fog_vp.size = Vector2i(ceil(map.world_size.x * fog_mask_scale), ceil(map.world_size.y * fog_mask_scale))
 	fog_vp.disable_3d = true
 	fog_vp.transparent_bg = false
 	fog_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
@@ -521,7 +558,7 @@ func _build_menu() -> void:
 	steps_title.add_theme_font_size_override("font_size", 13)
 	steps_title.add_theme_color_override("font_color", Color(0.84, 0.90, 0.98))
 	brand.add_child(steps_title)
-	brand.add_child(_make_menu_step("1", "Host or join", "Create a private match here, or paste the host address."))
+	brand.add_child(_make_menu_step("1", "Invite a friend", "Create a lobby and share its code, or enter a friend's code."))
 	brand.add_child(_make_menu_step("2", "Build your squad", "Choose three spells for each student before deployment."))
 	brand.add_child(_make_menu_step("3", "Outmanoeuvre", "Move with left click, aim with right click, cast with W / E / R."))
 	var voice_tip := Label.new()
@@ -539,23 +576,23 @@ func _build_menu() -> void:
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	columns.add_child(box)
 	var console_tag := Label.new()
-	console_tag.text = "DEPLOYMENT CONSOLE"
+	console_tag.text = "PLAY WITH A FRIEND"
 	console_tag.add_theme_font_size_override("font_size", 13)
 	console_tag.add_theme_color_override("font_color", Color(0.36, 0.90, 1.0))
 	box.add_child(console_tag)
 	var console_title := Label.new()
-	console_title.text = "Enter the arena"
+	console_title.text = "Your next duel"
 	console_title.add_theme_font_size_override("font_size", 30)
 	console_title.add_theme_color_override("font_color", Color.WHITE)
 	box.add_child(console_title)
 	var console_copy := Label.new()
-	console_copy.text = "Choose a callsign and connect to a match server."
+	console_copy.text = "Create a lobby, or join one with an invite code."
 	console_copy.add_theme_color_override("font_color", Color(0.62, 0.72, 0.82))
 	box.add_child(console_copy)
 	var form_gap := Control.new()
 	form_gap.custom_minimum_size.y = 10
 	box.add_child(form_gap)
-	box.add_child(_make_field_label("Callsign"))
+	box.add_child(_make_field_label("Your name"))
 	name_edit = LineEdit.new()
 	name_edit.max_length = 16
 	name_edit.placeholder_text = "Your display name"
@@ -564,40 +601,81 @@ func _build_menu() -> void:
 	var qn := _query_param("name")
 	name_edit.text = qn if qn != "" else "Player%d" % (randi() % 900 + 100)
 	box.add_child(name_edit)
-	box.add_child(_make_field_label("Server address"))
+	host_btn = Button.new()
+	host_btn.text = "CREATE LOBBY"
+	host_btn.custom_minimum_size = Vector2(0, 52)
+	host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host_btn.tooltip_text = "Create a private lobby and get a code to share with a friend"
+	_style_primary_button(host_btn)
+	host_btn.pressed.connect(_on_host_pressed)
+	box.add_child(host_btn)
+	if OS.has_feature("web"):
+		host_btn.disabled = true
+		host_btn.tooltip_text = "Use the desktop game to create a lobby"
+		var desktop_hint := Label.new()
+		desktop_hint.text = "Creating a lobby requires the desktop game."
+		desktop_hint.add_theme_font_size_override("font_size", 11)
+		desktop_hint.add_theme_color_override("font_color", Color(0.62, 0.72, 0.82))
+		box.add_child(desktop_hint)
+	var or_label := Label.new()
+	or_label.text = "OR JOIN A FRIEND"
+	or_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	or_label.add_theme_font_size_override("font_size", 11)
+	or_label.add_theme_color_override("font_color", Color(0.53, 0.64, 0.76))
+	box.add_child(or_label)
+	var code_row := HBoxContainer.new()
+	code_row.add_theme_constant_override("separation", 8)
+	box.add_child(code_row)
+	lobby_code_edit = LineEdit.new()
+	lobby_code_edit.placeholder_text = "Paste lobby code"
+	lobby_code_edit.max_length = 24
+	lobby_code_edit.custom_minimum_size.y = 46
+	lobby_code_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_menu_field(lobby_code_edit)
+	lobby_code_edit.text_submitted.connect(func(_text): _on_join_code_pressed())
+	code_row.add_child(lobby_code_edit)
+	join_code_btn = Button.new()
+	join_code_btn.text = "JOIN LOBBY"
+	join_code_btn.custom_minimum_size = Vector2(140, 46)
+	_style_menu_button(join_code_btn)
+	join_code_btn.pressed.connect(_on_join_code_pressed)
+	code_row.add_child(join_code_btn)
+	if OS.has_feature("web"):
+		var join_hint := Label.new()
+		join_hint.text = "Leave the code empty to join this server."
+		join_hint.add_theme_font_size_override("font_size", 11)
+		join_hint.add_theme_color_override("font_color", Color(0.62, 0.72, 0.82))
+		box.add_child(join_hint)
+	var advanced_toggle := Button.new()
+	advanced_toggle.text = "Advanced connection options"
+	advanced_toggle.toggle_mode = true
+	advanced_toggle.flat = true
+	advanced_toggle.add_theme_font_size_override("font_size", 12)
+	advanced_toggle.add_theme_color_override("font_color", Color(0.52, 0.70, 0.82))
+	box.add_child(advanced_toggle)
+	var advanced := VBoxContainer.new()
+	advanced.name = "AdvancedConnection"
+	advanced.add_theme_constant_override("separation", 6)
+	advanced.visible = false
+	box.add_child(advanced)
+	advanced_toggle.toggled.connect(func(expanded): advanced.visible = expanded)
+	advanced.add_child(_make_field_label("Server address"))
 	url_edit = LineEdit.new()
 	url_edit.text = _default_url()
 	url_edit.placeholder_text = "ws://host-address:9080"
-	url_edit.custom_minimum_size.y = 46
+	url_edit.custom_minimum_size.y = 38
 	_style_menu_field(url_edit)
-	box.add_child(url_edit)
-	var address_hint := Label.new()
-	address_hint.text = "Joining another PC? Replace localhost with the host's address."
-	address_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	address_hint.add_theme_font_size_override("font_size", 10)
-	address_hint.add_theme_color_override("font_color", Color(0.50, 0.61, 0.72))
-	box.add_child(address_hint)
+	advanced.add_child(url_edit)
 	connect_btn = Button.new()
-	connect_btn.text = "JOIN MATCH"
-	connect_btn.custom_minimum_size = Vector2(0, 54)
+	connect_btn.text = "CONNECT TO ADDRESS"
+	connect_btn.custom_minimum_size = Vector2(0, 38)
 	connect_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_style_primary_button(connect_btn)
+	_style_menu_button(connect_btn)
 	connect_btn.pressed.connect(_on_connect_pressed)
-	box.add_child(connect_btn)
+	advanced.add_child(connect_btn)
 	var connection_actions := HBoxContainer.new()
 	connection_actions.add_theme_constant_override("separation", 10)
 	box.add_child(connection_actions)
-	host_btn = Button.new()
-	host_btn.text = "HOST PRIVATE MATCH"
-	host_btn.custom_minimum_size = Vector2(0, 46)
-	host_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	host_btn.tooltip_text = "Start an authoritative game server on this computer"
-	_style_menu_button(host_btn)
-	host_btn.pressed.connect(_on_host_pressed)
-	connection_actions.add_child(host_btn)
-	if OS.has_feature("web"):
-		host_btn.disabled = true
-		host_btn.tooltip_text = "Browser builds can join games but cannot launch a local server"
 	var title_settings_button := Button.new()
 	title_settings_button.text = "SETTINGS"
 	title_settings_button.custom_minimum_size = Vector2(0, 46)
@@ -620,7 +698,7 @@ func _build_menu() -> void:
 	status_panel.add_theme_stylebox_override("panel", status_style)
 	box.add_child(status_panel)
 	status_label = Label.new()
-	status_label.text = "Ready to deploy"
+	status_label.text = ""
 	status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	status_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	status_label.add_theme_color_override("font_color", Color(1.0, 0.83, 0.28))
@@ -635,11 +713,379 @@ func _build_menu() -> void:
 	controls.add_theme_font_size_override("font_size", 10)
 	controls.add_theme_color_override("font_color", Color(0.49, 0.62, 0.74))
 	box.add_child(controls)
-	name_edit.text_submitted.connect(func(_t): _on_connect_pressed())
+	name_edit.text_submitted.connect(func(_t): lobby_code_edit.grab_focus())
 	url_edit.text_submitted.connect(func(_t): _on_connect_pressed())
 	panel.modulate = Color(1, 1, 1, 0)
 	var entrance := create_tween()
 	entrance.tween_property(panel, "modulate", Color.WHITE, 0.32).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+
+
+func _build_lobby() -> void:
+	lobby_layer = CanvasLayer.new()
+	lobby_layer.layer = 14
+	add_child(lobby_layer)
+	lobby_overlay = ColorRect.new()
+	lobby_overlay.color = Color(0.003, 0.009, 0.028, 0.985)
+	lobby_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	lobby_overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	lobby_layer.add_child(lobby_overlay)
+
+	var center := CenterContainer.new()
+	center.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	lobby_overlay.add_child(center)
+	var panel := PanelContainer.new()
+	panel.custom_minimum_size = Vector2(930, 720)
+	var panel_style := StyleBoxFlat.new()
+	panel_style.bg_color = Color(0.008, 0.020, 0.052, 0.99)
+	panel_style.border_color = Color(0.30, 0.84, 1.0, 0.88)
+	panel_style.set_border_width_all(2)
+	panel_style.set_corner_radius_all(16)
+	panel_style.shadow_color = Color(0.18, 0.04, 0.42, 0.45)
+	panel_style.shadow_size = 22
+	panel_style.content_margin_left = 42
+	panel_style.content_margin_right = 42
+	panel_style.content_margin_top = 30
+	panel_style.content_margin_bottom = 30
+	panel.add_theme_stylebox_override("panel", panel_style)
+	center.add_child(panel)
+
+	var content := VBoxContainer.new()
+	content.add_theme_constant_override("separation", 12)
+	panel.add_child(content)
+	var phase := Label.new()
+	phase.text = "PRE-MATCH  //  STEP 1 OF 3"
+	phase.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	phase.add_theme_font_size_override("font_size", 12)
+	phase.add_theme_color_override("font_color", Color(0.64, 0.44, 1.0))
+	content.add_child(phase)
+	var title := Label.new()
+	title.text = "YOUR LOBBY"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 34)
+	title.add_theme_color_override("font_color", Color(0.84, 0.96, 1.0))
+	content.add_child(title)
+	var subtitle := Label.new()
+	subtitle.text = "Share the code with a friend, then ready up together."
+	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	subtitle.add_theme_font_size_override("font_size", 15)
+	subtitle.add_theme_color_override("font_color", Color(0.54, 0.78, 0.92))
+	content.add_child(subtitle)
+	var map_row := HBoxContainer.new()
+	map_row.add_theme_constant_override("separation", 12)
+	content.add_child(map_row)
+	lobby_map_select = OptionButton.new()
+	lobby_map_select.custom_minimum_size = Vector2(340, 42)
+	for map_name in MapData.MAP_NAMES:
+		lobby_map_select.add_item(map_name)
+	lobby_map_select.item_selected.connect(_on_lobby_map_selected)
+	_style_menu_button(lobby_map_select)
+	map_row.add_child(lobby_map_select)
+	lobby_map_description = Label.new()
+	lobby_map_description.text = "MAP  ·  Host chooses the arena"
+	lobby_map_description.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lobby_map_description.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lobby_map_description.add_theme_font_size_override("font_size", 12)
+	lobby_map_description.add_theme_color_override("font_color", Color(0.65, 0.80, 0.90))
+	map_row.add_child(lobby_map_description)
+
+	var code_label := Label.new()
+	code_label.text = "LOBBY CODE"
+	code_label.add_theme_font_size_override("font_size", 12)
+	code_label.add_theme_color_override("font_color", Color(0.70, 0.48, 1.0))
+	content.add_child(code_label)
+	var share_code_row := HBoxContainer.new()
+	share_code_row.add_theme_constant_override("separation", 8)
+	content.add_child(share_code_row)
+	lobby_share_code_edit = LineEdit.new()
+	lobby_share_code_edit.editable = false
+	lobby_share_code_edit.custom_minimum_size = Vector2(0, 48)
+	lobby_share_code_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	lobby_share_code_edit.add_theme_font_size_override("font_size", 20)
+	_style_menu_field(lobby_share_code_edit)
+	share_code_row.add_child(lobby_share_code_edit)
+	var copy_code_button := Button.new()
+	copy_code_button.text = "COPY CODE"
+	copy_code_button.custom_minimum_size = Vector2(150, 48)
+	_style_primary_button(copy_code_button)
+	copy_code_button.pressed.connect(_copy_lobby_code)
+	share_code_row.add_child(copy_code_button)
+	var invite_label := Label.new()
+	invite_label.text = "SERVER ADDRESS"
+	invite_label.add_theme_font_size_override("font_size", 12)
+	invite_label.add_theme_color_override("font_color", Color(0.45, 0.86, 1.0))
+	var invite_advanced_toggle := Button.new()
+	invite_advanced_toggle.text = "Connection details"
+	invite_advanced_toggle.flat = true
+	invite_advanced_toggle.toggle_mode = true
+	invite_advanced_toggle.add_theme_font_size_override("font_size", 12)
+	invite_advanced_toggle.add_theme_color_override("font_color", Color(0.52, 0.70, 0.82))
+	content.add_child(invite_advanced_toggle)
+	var invite_advanced := VBoxContainer.new()
+	invite_advanced.visible = false
+	content.add_child(invite_advanced)
+	invite_advanced_toggle.toggled.connect(func(expanded): invite_advanced.visible = expanded)
+	invite_advanced.add_child(invite_label)
+	var invite_row := HBoxContainer.new()
+	invite_row.add_theme_constant_override("separation", 8)
+	invite_advanced.add_child(invite_row)
+	lobby_invite_edit = LineEdit.new()
+	lobby_invite_edit.editable = false
+	lobby_invite_edit.custom_minimum_size = Vector2(0, 44)
+	lobby_invite_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_menu_field(lobby_invite_edit)
+	invite_row.add_child(lobby_invite_edit)
+	var copy_button := Button.new()
+	copy_button.text = "COPY"
+	copy_button.custom_minimum_size = Vector2(120, 44)
+	_style_menu_button(copy_button)
+	copy_button.pressed.connect(_copy_lobby_invite)
+	invite_row.add_child(copy_button)
+
+	var seats := HBoxContainer.new()
+	seats.add_theme_constant_override("separation", 18)
+	seats.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content.add_child(seats)
+	for seat in 2:
+		var card := PanelContainer.new()
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var card_style := StyleBoxFlat.new()
+		card_style.bg_color = Color(0.018, 0.040, 0.082, 0.96)
+		card_style.border_color = Color(0.30, 0.78, 1.0, 0.65) if seat == 0 else Color(0.72, 0.34, 0.92, 0.65)
+		card_style.set_border_width_all(2)
+		card_style.set_corner_radius_all(10)
+		card_style.content_margin_left = 24
+		card_style.content_margin_right = 24
+		card_style.content_margin_top = 22
+		card_style.content_margin_bottom = 22
+		card.add_theme_stylebox_override("panel", card_style)
+		seats.add_child(card)
+		var column := VBoxContainer.new()
+		column.alignment = BoxContainer.ALIGNMENT_CENTER
+		column.add_theme_constant_override("separation", 10)
+		card.add_child(column)
+		var seat_label := Label.new()
+		seat_label.text = "SEAT %d" % (seat + 1)
+		seat_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		seat_label.add_theme_font_size_override("font_size", 12)
+		seat_label.add_theme_color_override("font_color", Color(0.52, 0.69, 0.82))
+		column.add_child(seat_label)
+		var player_name := Label.new()
+		player_name.text = "WAITING FOR PLAYER"
+		player_name.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		player_name.add_theme_font_size_override("font_size", 23)
+		player_name.add_theme_color_override("font_color", Color.WHITE)
+		column.add_child(player_name)
+		lobby_player_names.append(player_name)
+		var role := Label.new()
+		role.text = "HOST" if seat == 0 else "CHALLENGER"
+		role.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		role.add_theme_font_size_override("font_size", 11)
+		role.add_theme_color_override("font_color", Color(0.42, 0.84, 1.0) if seat == 0 else Color(0.76, 0.48, 1.0))
+		column.add_child(role)
+		lobby_player_roles.append(role)
+		var state_label := Label.new()
+		state_label.text = "EMPTY"
+		state_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		state_label.add_theme_font_size_override("font_size", 15)
+		state_label.add_theme_color_override("font_color", Color(0.58, 0.62, 0.68))
+		column.add_child(state_label)
+		lobby_player_states.append(state_label)
+
+	lobby_status = Label.new()
+	lobby_status.text = "Waiting for a second player..."
+	lobby_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lobby_status.add_theme_font_size_override("font_size", 14)
+	lobby_status.add_theme_color_override("font_color", Color(1.0, 0.80, 0.34))
+	content.add_child(lobby_status)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 10)
+	content.add_child(actions)
+	var leave_button := Button.new()
+	leave_button.text = "LEAVE LOBBY"
+	leave_button.custom_minimum_size = Vector2(180, 52)
+	_style_menu_button(leave_button)
+	leave_button.pressed.connect(_leave_match)
+	actions.add_child(leave_button)
+	lobby_ready_button = Button.new()
+	lobby_ready_button.text = "READY UP"
+	lobby_ready_button.toggle_mode = true
+	lobby_ready_button.custom_minimum_size = Vector2(220, 52)
+	lobby_ready_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_style_menu_button(lobby_ready_button)
+	lobby_ready_button.toggled.connect(_on_lobby_ready_toggled)
+	actions.add_child(lobby_ready_button)
+	lobby_start_button = Button.new()
+	lobby_start_button.text = "CONTINUE TO SPELLS"
+	lobby_start_button.custom_minimum_size = Vector2(240, 52)
+	_style_primary_button(lobby_start_button)
+	lobby_start_button.pressed.connect(_on_lobby_start_pressed)
+	actions.add_child(lobby_start_button)
+	lobby_overlay.visible = false
+
+
+func _lobby_invite_address() -> String:
+	if _host_server_pid > 0:
+		for address in IP.get_local_addresses():
+			if address.contains(":") or address.begins_with("127.") or address.begins_with("169.254."):
+				continue
+			return "ws://%s:%d" % [address, _host_server_port]
+	return Net.normalize_server_url(url_edit.text)
+
+
+func _encode_lobby_code(server_url: String) -> String:
+	var address := Net.normalize_server_url(server_url).trim_prefix("ws://").trim_prefix("wss://")
+	var address_parts := address.split(":", false)
+	if address_parts.size() != 2 or not address_parts[1].is_valid_int():
+		return ""
+	var octets := address_parts[0].split(".", false)
+	var port := int(address_parts[1])
+	if octets.size() != 4 or port <= 0 or port > 65535:
+		return ""
+	var packed: int = 0
+	for octet_text in octets:
+		if not octet_text.is_valid_int():
+			return ""
+		var octet := int(octet_text)
+		if octet < 0 or octet > 255:
+			return ""
+		packed = (packed << 8) | octet
+	packed = (packed << 16) | port
+	const ALPHABET := "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	var encoded := ""
+	for index in range(9, -1, -1):
+		encoded += ALPHABET.substr((packed >> (index * 5)) & 31, 1)
+	return "CA-" + encoded
+
+
+func _decode_lobby_code(raw_code: String) -> String:
+	var code := raw_code.strip_edges().to_upper().replace("-", "").replace(" ", "")
+	if code.begins_with("CA"):
+		code = code.substr(2)
+	if code.length() != 10:
+		return ""
+	const ALPHABET := "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+	var packed: int = 0
+	for character in code:
+		var value := ALPHABET.find(character)
+		if value < 0:
+			return ""
+		packed = (packed << 5) | value
+	var port := packed & 65535
+	var ip_value := packed >> 16
+	if port <= 0:
+		return ""
+	return "ws://%d.%d.%d.%d:%d" % [
+		(ip_value >> 24) & 255, (ip_value >> 16) & 255,
+		(ip_value >> 8) & 255, ip_value & 255, port,
+	]
+
+
+func _copy_lobby_invite() -> void:
+	if lobby_invite_edit == null or lobby_invite_edit.text == "":
+		return
+	DisplayServer.clipboard_set(lobby_invite_edit.text)
+	lobby_status.text = "Invite address copied. Send it to the other player."
+
+
+func _copy_lobby_code() -> void:
+	if lobby_share_code_edit == null or lobby_share_code_edit.text == "":
+		return
+	DisplayServer.clipboard_set(lobby_share_code_edit.text)
+	lobby_status.text = "Lobby code copied. The other player can enter it on the title screen."
+
+
+func _on_join_code_pressed() -> void:
+	if join_code_btn.disabled:
+		return
+	if lobby_code_edit.text.strip_edges() == "":
+		if OS.has_feature("web"):
+			_on_connect_pressed()
+		else:
+			_set_menu_status("Paste your friend's lobby code, or create your own lobby.")
+			lobby_code_edit.grab_focus()
+		return
+	var server_url := _decode_lobby_code(lobby_code_edit.text)
+	if server_url == "":
+		_set_menu_status("That code doesn't look right. Copy it from your friend's lobby and try again.")
+		return
+	_stop_host_server()
+	voice.start()
+	url_edit.text = server_url
+	_connect_to_url(server_url)
+
+
+func _on_lobby_ready_toggled(ready: bool) -> void:
+	if _updating_lobby_ui or slot < 0:
+		return
+	Net.c_lobby_ready.rpc_id(1, ready)
+	lobby_ready_button.text = "READY" if ready else "READY UP"
+	lobby_status.text = "Ready. Waiting for the other player..." if ready else "Ready status cancelled."
+
+
+func _on_lobby_start_pressed() -> void:
+	if slot != 0:
+		return
+	lobby_start_button.disabled = true
+	lobby_status.text = "Opening squad setup..."
+	Net.c_lobby_start.rpc_id(1)
+
+
+func _refresh_lobby(snapshot: Dictionary) -> void:
+	lobby_map_select.disabled = slot != 0
+	lobby_map_select.select(MapData.MAP_IDS.find(map.map_id))
+	lobby_map_description.text = "HG E  ·  Main hall, rotunda and lecture wings\nLarge arena  ·  Host selects the map" if map.map_id == "hg_e" else "Original dining hall and buffet\nCompact arena  ·  Host selects the map"
+	var connected: Array = snapshot.get("conn", [false, false])
+	var ready: Array = snapshot.get("lr", [false, false])
+	for seat in 2:
+		var occupied := seat < connected.size() and bool(connected[seat])
+		var player_ready := occupied and seat < ready.size() and bool(ready[seat])
+		lobby_player_names[seat].text = names[seat].to_upper() if occupied and names[seat] != "" else "WAITING FOR PLAYER"
+		lobby_player_roles[seat].text = ("HOST" if seat == 0 else "CHALLENGER") + ("  •  YOU" if seat == slot else "")
+		lobby_player_states[seat].text = "READY" if player_ready else ("NOT READY" if occupied else "EMPTY")
+		lobby_player_states[seat].add_theme_color_override("font_color", Color(0.42, 1.0, 0.68) if player_ready else Color(1.0, 0.68, 0.32) if occupied else Color(0.50, 0.54, 0.60))
+	_updating_lobby_ui = true
+	var mine_ready := slot >= 0 and slot < ready.size() and bool(ready[slot])
+	lobby_ready_button.button_pressed = mine_ready
+	lobby_ready_button.text = "READY" if mine_ready else "READY UP"
+	_updating_lobby_ui = false
+	var both_connected := connected.size() >= 2 and bool(connected[0]) and bool(connected[1])
+	var both_ready := ready.size() >= 2 and bool(ready[0]) and bool(ready[1])
+	lobby_start_button.visible = slot == 0
+	lobby_start_button.disabled = not both_connected or not both_ready
+	if not both_connected:
+		lobby_status.text = "Waiting for a second player. Share the lobby code above."
+	elif both_ready:
+		lobby_status.text = "Both players are ready. Continue to choose your spells." if slot == 0 else "Both players are ready. Waiting for the host to continue."
+	elif mine_ready:
+		lobby_status.text = "You are ready. Waiting for your rival."
+	else:
+		lobby_status.text = "Both players are connected. Ready up when prepared."
+
+
+func _on_lobby_map_selected(index: int) -> void:
+	if slot == 0 and index >= 0 and index < MapData.MAP_IDS.size():
+		Net.c_lobby_map.rpc_id(1, MapData.MAP_IDS[index])
+
+
+func _apply_map(map_id: String) -> void:
+	if map_id == map.map_id or not map_id in MapData.MAP_IDS:
+		return
+	map = MapData.new(map_id)
+	map_view.map = map
+	breakable_view.map = map
+	door_view.map = map
+	neon_ambience.map = map
+	world.position = map.world_size if slot == 1 else Vector2.ZERO
+	camera.limit_right = int(map.world_size.x)
+	camera.limit_bottom = int(map.world_size.y)
+	camera.position = map.world_size * 0.5
+	_reset_round_visuals()
+	_last_map_revision = -1
+	_last_door_state = -1
+	_last_vision_signature = -1
+	_on_graphics_quality_selected(graphics_quality)
+	breakable_view.queue_redraw()
+	door_view.queue_redraw()
 
 
 func _build_loadout() -> void:
@@ -1192,6 +1638,8 @@ func _set_quality_variables(quality: int) -> void:
 	graphics_quality = clampi(quality, GraphicsQuality.LOW, GraphicsQuality.HIGH)
 	var preset: Dictionary = GRAPHICS_PRESETS[graphics_quality]
 	map_cache_scale = float(preset["map_scale"])
+	# Cap large arena textures for WebGL / integrated GPUs.
+	map_cache_scale = minf(map_cache_scale, 4096.0 / maxf(map.world_size.x, map.world_size.y))
 	fog_mask_scale = float(preset["fog_scale"])
 	fog_mask_fps = float(preset["fog_fps"])
 	effect_density = float(preset["effect_density"])
@@ -1203,13 +1651,13 @@ func _set_quality_variables(quality: int) -> void:
 func _on_graphics_quality_selected(quality: int) -> void:
 	_set_quality_variables(quality)
 	if map_vp != null:
-		map_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * map_cache_scale), ceil(Cfg.WORLD_SIZE.y * map_cache_scale))
+		map_vp.size = Vector2i(ceil(map.world_size.x * map_cache_scale), ceil(map.world_size.y * map_cache_scale))
 		map_view.scale = Vector2(map_cache_scale, map_cache_scale)
 		map_sprite.scale = Vector2.ONE / map_cache_scale
 		map_view.queue_redraw()
 		map_vp.render_target_update_mode = SubViewport.UPDATE_ONCE
 	if fog_vp != null:
-		fog_vp.size = Vector2i(ceil(Cfg.WORLD_SIZE.x * fog_mask_scale), ceil(Cfg.WORLD_SIZE.y * fog_mask_scale))
+		fog_vp.size = Vector2i(ceil(map.world_size.x * fog_mask_scale), ceil(map.world_size.y * fog_mask_scale))
 		vision_mask.scale = Vector2(fog_mask_scale, fog_mask_scale)
 		fog_sprite.scale = Vector2.ONE / fog_mask_scale
 		_last_vision_signature = -1
@@ -1340,14 +1788,23 @@ func _show_menu(show: bool, status: String) -> void:
 		pause_overlay.visible = false
 	if show and loadout_overlay != null:
 		loadout_overlay.visible = false
+	if show and lobby_overlay != null:
+		lobby_overlay.visible = false
 	menu_layer.visible = show
 	world.visible = not show
 	hud_layer.visible = not show
-	status_label.text = status if status != "" else "Ready to deploy"
+	_set_menu_status(status)
 	connect_btn.disabled = false
-	connect_btn.text = "JOIN MATCH"
+	connect_btn.text = "CONNECT TO ADDRESS"
+	join_code_btn.disabled = false
+	join_code_btn.text = "JOIN LOBBY"
 	host_btn.disabled = OS.has_feature("web")
-	host_btn.text = "HOST PRIVATE MATCH"
+	host_btn.text = "CREATE LOBBY"
+
+
+func _set_menu_status(message: String) -> void:
+	status_label.text = message
+	status_label.get_parent().visible = message != ""
 
 
 # --------------------------------------------------------------------------
@@ -1390,18 +1847,20 @@ func _on_connect_pressed() -> void:
 func _connect_to_url(url: String) -> void:
 	url = Net.normalize_server_url(url)
 	if url == "":
-		status_label.text = "Enter a server address."
+		_set_menu_status("Enter a server address.")
 		return
 	if OS.has_feature("web"):
 		var secure_page = JavaScriptBridge.eval("location.protocol === 'https:'", true)
 		if bool(secure_page) and url.begins_with("ws://"):
-			status_label.text = "This secure web page needs a wss:// server address."
+			_set_menu_status("This invite can't be used on this web page. Use the desktop game, or a secure server address in Advanced.")
 			return
 	url_edit.text = url
 	connect_btn.disabled = true
 	connect_btn.text = "CONNECTING..."
+	join_code_btn.disabled = true
+	join_code_btn.text = "JOINING..."
 	host_btn.disabled = true
-	status_label.text = "Connecting to %s ..." % url
+	_set_menu_status("Joining lobby...")
 	var err := Net.join(url)
 	if err != OK:
 		_show_menu(true, "Could not start connection (error %d)" % err)
@@ -1411,22 +1870,29 @@ func _connect_to_url(url: String) -> void:
 
 func _on_host_pressed() -> void:
 	if OS.has_feature("web"):
-		status_label.text = "Hosting is available in the desktop build. Browser players can join a host."
+		_set_menu_status("Use the desktop game to create a lobby. You can still join a friend here.")
 		return
 	_stop_host_server()
 	var requested_port := int(_query_param("host_port"))
-	_host_server_port = requested_port if requested_port > 0 and requested_port <= 65535 else Cfg.DEFAULT_PORT
-	var port_probe := TCPServer.new()
-	var port_error := port_probe.listen(_host_server_port)
-	port_probe.stop()
-	if port_error != OK:
-		_show_menu(true, "Port %d is already in use. Stop the other server or join it with Deploy." % _host_server_port)
+	_host_server_port = 0
+	var first_port := requested_port if requested_port > 0 and requested_port <= 65535 else Cfg.DEFAULT_PORT
+	var last_port := first_port if requested_port > 0 else mini(Cfg.DEFAULT_PORT + 19, 65535)
+	for candidate in range(first_port, last_port + 1):
+		var port_probe := TCPServer.new()
+		var port_error := port_probe.listen(candidate)
+		port_probe.stop()
+		if port_error == OK:
+			_host_server_port = candidate
+			break
+	if _host_server_port == 0:
+		_show_menu(true, "No free lobby port was found. Close another hosted lobby and try again.")
 		return
 	voice.start()
 	connect_btn.disabled = true
+	join_code_btn.disabled = true
 	host_btn.disabled = true
-	host_btn.text = "STARTING SERVER..."
-	status_label.text = "Starting a game server on port %d ..." % _host_server_port
+	host_btn.text = "CREATING LOBBY..."
+	_set_menu_status("Creating your lobby...")
 	var args := PackedStringArray()
 	args.append("--headless")
 	if OS.has_feature("editor"):
@@ -1477,9 +1943,14 @@ func _on_welcome(s: int, protocol_version: int) -> void:
 	_last_snapshot_at = Time.get_ticks_msec() / 1000.0
 	world_rotation = PI if slot == 1 else 0.0
 	world.rotation = world_rotation
-	world.position = Cfg.WORLD_SIZE if slot == 1 else Vector2.ZERO
+	world.position = map.world_size if slot == 1 else Vector2.ZERO
 	_reset_round_visuals()
 	_show_menu(false, "")
+	if lobby_invite_edit != null:
+		lobby_invite_edit.text = _lobby_invite_address()
+		lobby_share_code_edit.text = _encode_lobby_code(lobby_invite_edit.text)
+	if not OS.has_feature("web") and slot == 0 and _query_param("map") in MapData.MAP_IDS:
+		Net.c_lobby_map.rpc_id(1, _query_param("map"))
 	sfx.play("start", -6.0)
 
 
@@ -1533,11 +2004,33 @@ func _reset_round_visuals() -> void:
 
 func _on_snapshot(d: Dictionary) -> void:
 	_last_snapshot_at = Time.get_ticks_msec() / 1000.0
+	_apply_map(str(d.get("map", "dining_hall")))
 	var prev_state := state
 	state = d["st"]
+	if not OS.has_feature("web") and _query_param("auto_loadout") != "" and prev_state != state:
+		print("[test] state=%d map=%s slot=%d" % [state, map.map_id, slot])
+	names = d.get("names", names)
 	map.set_doors_closed(state != Cfg.State.DEPLOYMENT)
 	map.apply_breakable_state(d.get("br", []))
 	loadout_ready = d.get("rd", [false, false])
+	if state == Cfg.State.LOBBY:
+		lobby_overlay.visible = true
+		loadout_overlay.visible = false
+		hud_layer.visible = false
+		if lobby_invite_edit.text == "":
+			lobby_invite_edit.text = _lobby_invite_address()
+			lobby_share_code_edit.text = _encode_lobby_code(lobby_invite_edit.text)
+		_refresh_lobby(d)
+		if not OS.has_feature("web") and _query_param("auto_loadout") != "":
+			var connected: Array = d.get("conn", [false, false])
+			var ready: Array = d.get("lr", [false, false])
+			if connected.all(func(value): return bool(value)):
+				if slot >= 0 and not bool(ready[slot]):
+					Net.c_lobby_ready.rpc_id(1, true)
+				elif slot == 0 and ready.all(func(value): return bool(value)):
+					Net.c_lobby_start.rpc_id(1)
+	elif lobby_overlay.visible:
+		lobby_overlay.visible = false
 	if state == Cfg.State.LOADOUT:
 		if prev_state != Cfg.State.LOADOUT or (slot >= 0 and loadout_ready[slot]):
 			loadout_masks = d.get("lo", Cfg.DEFAULT_LOADOUTS).duplicate()
@@ -1854,7 +2347,7 @@ func _process(dt: float) -> void:
 	if camera != null and slot >= 0 and selected >= 0 and selected < own.size() and own[selected]["init"]:
 		var focus: Vector2 = own[selected]["disp"]
 		if slot == 1:
-			focus = Cfg.WORLD_SIZE - focus
+			focus = map.world_size - focus
 		camera.position = focus
 	_update_screen_shake(dt)
 	for idx in enemies:
@@ -1990,6 +2483,8 @@ func _tick_pooled_effects(active: Array, pool: Array[Dictionary], dt: float) -> 
 # --------------------------------------------------------------------------
 
 func _unhandled_input(event: InputEvent) -> void:
+	if lobby_overlay != null and lobby_overlay.visible:
+		return
 	if loadout_overlay != null and loadout_overlay.visible:
 		return
 	if event is InputEventKey and event.pressed and not event.echo \
@@ -2255,7 +2750,7 @@ func _dir_destination(from: Vector2, dir: Vector2, max_d: float) -> Vector2:
 	if d >= Cfg.TILE * 1.5:
 		return from + dir * d
 	var far := from + dir * minf(max_d, Cfg.VOICE_STEP)
-	return Vector2(clampf(far.x, Cfg.TILE, Cfg.WORLD_SIZE.x - Cfg.TILE), clampf(far.y, Cfg.TILE, Cfg.WORLD_SIZE.y - Cfg.TILE))
+	return Vector2(clampf(far.x, Cfg.TILE, map.world_size.x - Cfg.TILE), clampf(far.y, Cfg.TILE, map.world_size.y - Cfg.TILE))
 
 
 ## Spread squad members around a destination: one on the spot, two slightly

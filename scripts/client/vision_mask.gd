@@ -12,11 +12,11 @@ var reveal_all := false
 
 
 func _draw() -> void:
-	draw_rect(Rect2(Vector2.ZERO, Cfg.WORLD_SIZE), Color.BLACK)
 	if game == null:
 		return
+	draw_rect(Rect2(Vector2.ZERO, game.map.world_size), Color.BLACK)
 	if reveal_all:
-		draw_rect(Rect2(Vector2.ZERO, Cfg.WORLD_SIZE), Color.WHITE)
+		draw_rect(Rect2(Vector2.ZERO, game.map.world_size), Color.WHITE)
 		return
 	var fogs: Array = game.fog_list()
 	var points := PackedVector2Array()

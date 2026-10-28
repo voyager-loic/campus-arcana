@@ -23,6 +23,9 @@ func _draw() -> void:
 	if draw_mode == DrawMode.BREAKABLES:
 		_draw_breakable_layer()
 		return
+	if map.map_id == "hg_e":
+		_draw_hg_e()
+		return
 	var t := float(Cfg.TILE)
 
 	# Warm terrazzo with the restrained palette of the restored small map.
@@ -91,6 +94,91 @@ func _draw() -> void:
 	_draw_lower_room_clutter()
 
 	_draw_door_frames()
+
+
+func _draw_hg_e() -> void:
+	var t := float(Cfg.TILE)
+	draw_rect(Rect2(Vector2.ZERO, map.world_size), Color("0b111b"))
+	for region in map.regions:
+		var color := Color("383630")
+		match str(region["kind"]):
+			"hall": color = Color("49433a")
+			"rotunda", "entry": color = Color("45403b")
+			"classroom", "lecture", "fan_west", "fan_east": color = Color("302e30")
+			"corridor": color = Color("35363a")
+		if region.has("polygon"):
+			var polygon := PackedVector2Array()
+			for point in region["polygon"]:
+				polygon.append(point * t)
+			draw_colored_polygon(polygon, color)
+		else:
+			draw_rect(Rect2(Vector2(region["rect"].position) * t, Vector2(region["rect"].size) * t), color)
+	# Main hall stone border and inlaid central path. All inlays are decorative.
+	for x in [77.0, 93.0]:
+		draw_line(Vector2(x, 52) * t, Vector2(x, 92) * t, Color("8a7860"), 3.0)
+	draw_rect(Rect2(Vector2(81, 56) * t, Vector2(8, 32) * t), Color(0.70, 0.62, 0.48, 0.055))
+	for stair in map.stairs:
+		var r := Rect2(Vector2(stair.position) * t, Vector2(stair.size) * t)
+		draw_rect(r, Color("55565a"))
+		for y in range(int(r.position.y) + 4, int(r.end.y), 12):
+			draw_line(Vector2(r.position.x + 3, y), Vector2(r.end.x - 3, y), Color("9b9b94"), 2.0)
+	# Each chair is drawn at the centre of its authoritative footprint.
+	for seat in map.lecture_seats:
+		var point := (Vector2(seat["cell"]) + Vector2(0.5, 0.5)) * t
+		draw_set_transform(point, float(seat["angle"]), Vector2.ONE)
+		draw_rect(Rect2(-14, -14, 28, 28), Color("674b32"))
+		draw_rect(Rect2(-11, -11, 22, 19), Color("ab7745"))
+		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+	for y in map.H:
+		for x in map.W:
+			var kind: int = map.solid_kind(x, y)
+			var r := Rect2(x * t, y * t, t, t)
+			if kind == map.SolidKind.WALL:
+				var exposed := false
+				for d in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
+					if map.solid_kind(x + d.x, y + d.y) == map.SolidKind.NONE:
+						exposed = true
+				if exposed:
+					_draw_wall(r, x, y)
+				else:
+					draw_rect(r, Color("242b35"))
+			elif kind == map.SolidKind.PLANT:
+				_draw_plant(r, x + y * 17)
+	for room in map.closed_rooms:
+		var r := Rect2(Vector2(room["rect"].position) * t, Vector2(room["rect"].size) * t)
+		draw_rect(r.grow(-5), Color("202933"))
+		draw_rect(r.grow(-8), Color("39404a"), false, 2.0)
+	for table in map.tables:
+		if bool(table.get("breakable", false)):
+			continue
+		var r: Rect2 = map.table_visual_rect(table)
+		draw_set_transform(r.get_center(), float(table.get("angle", 0.0)), Vector2.ONE)
+		_draw_table_chairs(Rect2(-r.size * 0.5, r.size), table["seats"], 0)
+		_draw_table(Rect2(-r.size * 0.5, r.size), 0, 0, false, false, false)
+		draw_set_transform(Vector2.ZERO, 0, Vector2.ONE)
+	# Fountain shares the exact solid counter footprint; its halo has no hitbox.
+	var fountain := Vector2(84.5, 41.5) * t
+	draw_circle(fountain + Vector2(5, 6), 49, Color(0, 0, 0, 0.35))
+	draw_circle(fountain, 47, Color("b3a389"))
+	draw_circle(fountain, 36, Color("315c70"))
+	draw_arc(fountain, 27, 0.2, 5.2, 32, Color("61bdd5"), 2.0, true)
+	draw_circle(fountain, 10, Color("9da59b"))
+	# Room labels and small damage details stay in the cached layer.
+	for region in map.regions:
+		if str(region["label"]) == "":
+			continue
+		var center: Vector2
+		if region.has("rect"):
+			center = Vector2(region["rect"].position) + Vector2(region["rect"].size) * 0.5
+		else:
+			center = Vector2.ZERO
+			for point in region["polygon"]:
+				center += point
+			center /= region["polygon"].size()
+		draw_string(font, center * t + Vector2(-180, -16), str(region["label"]), HORIZONTAL_ALIGNMENT_CENTER, 360, 18, Color(0.80, 0.74, 0.62, 0.48))
+	for point in [Vector2(58, 64), Vector2(111, 95), Vector2(84, 56), Vector2(32, 44), Vector2(138, 98)]:
+		_draw_paper(point * t, point.x * 0.1)
+		_draw_broken_chair((point + Vector2(1, 1)) * t, 0.4)
 
 
 func _draw_breakable_layer() -> void:
@@ -266,7 +354,7 @@ func _draw_broken_chair(position: Vector2, angle: float) -> void:
 
 
 func _draw_wall(r: Rect2, x: int, y: int) -> void:
-	var blast_damaged: bool = (y == 0 and x >= 14 and x <= 23) or (y == map.MAIN_BOTTOM and x in [70, 71, 77, 78])
+	var blast_damaged: bool = map.map_id == "dining_hall" and ((y == 0 and x >= 14 and x <= 23) or (y == map.MAIN_BOTTOM and x in [70, 71, 77, 78]))
 	draw_rect(r, Color("665e54") if blast_damaged else Color("cbc2ae"))
 	draw_rect(Rect2(r.position + Vector2(3, 3), r.size - Vector2(6, 6)), Color("8b7c68") if blast_damaged else Color("e1d8c2"))
 	if not map.is_wall_tile(x, y - 1):

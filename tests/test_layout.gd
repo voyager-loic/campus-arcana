@@ -5,6 +5,7 @@ const MapData = preload("res://scripts/map_data.gd")
 const Hud = preload("res://scripts/client/hud.gd")
 const ClientGame = preload("res://scripts/client/client_game.gd")
 const NeonAmbience = preload("res://scripts/client/neon_ambience.gd")
+const ServerGame = preload("res://scripts/server/server_game.gd")
 
 var failed := 0
 
@@ -30,6 +31,10 @@ func _ready() -> void:
 	hud.free()
 	var accessibility_client = ClientGame.new()
 	_check(accessibility_client.neon_effects_enabled, "neon ambience defaults to enabled")
+	var lobby_code: String = accessibility_client._encode_lobby_code("ws://192.168.1.42:9083")
+	_check(lobby_code.length() == 13 and lobby_code.begins_with("CA-"), "lobby address encodes to a short share code")
+	_check(accessibility_client._decode_lobby_code(lobby_code) == "ws://192.168.1.42:9083", "lobby code restores its server address and port")
+	_check(accessibility_client._decode_lobby_code("CA-NOT-A-CODE") == "", "invalid lobby codes are rejected before connection")
 	var neon = NeonAmbience.new()
 	neon.configure(false, 0, false)
 	_check(not neon.visible and not neon.is_processing(), "neon ambience toggle disables drawing and animation work")
@@ -40,6 +45,19 @@ func _ready() -> void:
 	accessibility_client.high_contrast_markers = true
 	_check(accessibility_client.team_color(0) != standard_blue and accessibility_client.team_color(0) != accessibility_client.team_color(1), "high-contrast accessibility palette keeps teams distinct")
 	accessibility_client.free()
+	_check(Cfg.PROTOCOL_VERSION >= 2, "lobby protocol rejects older incompatible clients")
+	var lobby_server = ServerGame.new()
+	lobby_server.peers = [101, 202]
+	lobby_server.names = ["Host", "Guest"]
+	lobby_server._enter_lobby()
+	_check(lobby_server.state == Cfg.State.LOBBY and lobby_server.lobby_ready == [false, false], "both players enter a fresh lobby before loadout")
+	lobby_server.on_lobby_ready(101, true)
+	lobby_server.on_lobby_ready(202, true)
+	lobby_server.on_lobby_start(202)
+	_check(lobby_server.state == Cfg.State.LOBBY, "only the host can start squad setup")
+	lobby_server.on_lobby_start(101)
+	_check(lobby_server.state == Cfg.State.LOADOUT, "ready players advance to squad setup when the host starts")
+	lobby_server.free()
 	_check(Cfg.MAP_W == 80 and Cfg.MAP_H == 71, "arena includes the enlarged hall and lower square room")
 	_check(not map.is_wall_tile(4, map.MAIN_BOTTOM), "Entrance 1 threshold is open")
 	_check(not map.is_wall_tile(Cfg.MAP_W - 1, 4), "Entrance 2 threshold is open")
